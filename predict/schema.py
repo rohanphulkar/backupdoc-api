@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
 # Create Pydantic models for response serialization
 class LabelResponse(BaseModel):
     id: str
@@ -16,7 +17,7 @@ class PredictionResponse(BaseModel):
     id: str
     patient: str
     original_image: str
-    predicted_image: str | None
+    predicted_image: Optional[str] =
     is_annotated: bool
     created_at: datetime
     updated_at: datetime

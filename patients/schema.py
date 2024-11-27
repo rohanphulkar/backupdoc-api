@@ -13,10 +13,10 @@ class PatientCreateSchema(BaseModel):
         from_attributes = True
 
 class PatientUpdateSchema(BaseModel):
-    name: str | None
-    phone: str | None 
-    date_of_birth: datetime | None
-    gender: Gender | None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    date_of_birth: Optional[datetime] = None 
+    gender: Optional[Gender] = None
 
     class Config:
         from_attributes = True
