@@ -5,7 +5,7 @@ from .model import Prediction, Label
 from sqlalchemy.orm import Session
 from .schema import PredictionResponse, LabelResponse
 from typing import List
-from utils.auth import get_current_user
+from utils.auth import verify_token
 from utils.prediction import calculate_class_percentage
 from auth.model import User
 from patients.model import Patient
@@ -17,6 +17,9 @@ import random, os
 import datetime
 from decouple import config
 from patients.model import PatientXray
+from utils.report import report_generate, create_dental_radiology_report, send_email_with_attachment
+from dateutil.utils import today
+
 prediction_router = APIRouter()
 
 @prediction_router.get("/get-predictions/{patient_id}",
@@ -55,10 +58,13 @@ async def get_predictions(patient_id: str, db: Session = Depends(get_db)):
     status_code=200,
     summary="Get prediction details",
     description="""
-    Get detailed information about a specific prediction
+    Get detailed information about a specific prediction    
     
     Required parameters:
     - prediction_id: UUID of the prediction
+    
+    Required headers:
+    - Authorization: Bearer token from login
     
     Returns prediction details with:
     - prediction: Full prediction object
@@ -70,11 +76,22 @@ async def get_predictions(patient_id: str, db: Session = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def get_prediction(prediction_id: str, db: Session = Depends(get_db)):
+async def get_prediction(request: Request, prediction_id: str, db: Session = Depends(get_db)):
     try:
+        decoded_token = verify_token(request)
+
+        user_id = decoded_token.get("user_id") if decoded_token else None
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or str(user.user_type) != "doctor":
+            return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
+        
         prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+        
+        prediction.original_image = f"{request.base_url}{prediction.original_image}"
+        prediction.predicted_image = f"{request.base_url}{prediction.predicted_image}"
         
         labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
         
@@ -87,7 +104,7 @@ async def get_prediction(prediction_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
-@prediction_router.post("/create-prediction/{xray_id}",
+@prediction_router.get("/create-prediction/{xray_id}",
     response_model=dict,
     status_code=200,
     summary="Create new prediction",
@@ -116,13 +133,13 @@ async def get_prediction(prediction_id: str, db: Session = Depends(get_db)):
 )
 async def create_prediction(request: Request, xray_id: str, db: Session = Depends(get_db)):
     try:
-        # Validate user authorization
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        decoded_token = verify_token(request)
+
+        user_id = decoded_token.get("user_id") if decoded_token else None
         
-        user = db.query(User).filter(User.id == current_user.id).first()
-        if not user or str(user.user_type) != "doctor":
+        user = db.query(User).filter(User.id == user_id).first()
+
+        if not user or str(user.user_type) != "doctor" :
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
         
         # Validate and get X-ray
@@ -134,7 +151,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             return JSONResponse(status_code=400, content={"error": "X-ray not found"})
         
         # Validate image exists
-        if not os.path.exists(xray.original_image):
+        if not os.path.exists(str(xray.original_image)):
             return JSONResponse(status_code=400, content={"error": "X-ray image file not found"})
             
         # Run prediction model
@@ -143,7 +160,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             project = rf.workspace().project("stage-1-launch")
             model = project.version(1).model
             
-            prediction_result = model.predict(xray.original_image, confidence=40)
+            prediction_result = model.predict(str(xray.original_image), confidence=1)
             if not prediction_result:
                 return JSONResponse(status_code=500, content={"error": "Prediction failed"})
                 
@@ -153,23 +170,29 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
 
         # Generate annotated image
         try:
-            image = cv2.imread(xray.original_image)
+            image = cv2.imread(str(xray.original_image))
             if image is None:
                 return JSONResponse(status_code=400, content={"error": "Failed to load image"})
 
             labels = [item["class"] for item in prediction_json["predictions"]]
-            detections = sv.Detections.from_roboflow(prediction_json)
-            annotator = sv.BoxAnnotator()
-            annotated_image = annotator.annotate(scene=image, detections=detections, labels=labels)
+            detections = sv.Detections.from_inference(prediction_json)
+            
+            label_annotator = sv.LabelAnnotator()
+            mask_annotator = sv.MaskAnnotator()
+            
+            annotated_image = mask_annotator.annotate(scene=image, detections=detections)
+            annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
             # Save annotated image
-            output_dir = "analyzed"
-            os.makedirs(output_dir, exist_ok=True)
-            
-            filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(1000, 9999)}.jpeg"
-            output_path = os.path.join(output_dir, filename)
-            
             annotated_image_pil = Image.fromarray(annotated_image)
+            current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            random_number = random.randint(1000, 9999)
+            random_filename = f"{current_datetime}-{random_number}.jpeg"
+
+            output_dir = os.path.join("uploads", "analyzed")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, random_filename)
+            
             annotated_image_pil.save(output_path, optimize=True, quality=85)
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Image annotation failed: {str(e)}"})
@@ -201,6 +224,10 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
 
             # Update patient xray with annotated image
             xray.annotated_image = output_path
+            xray.prediction_id = str(prediction.id)
+            db.commit()
+
+            user.credits -= 1
             db.commit()
             
             return JSONResponse(status_code=200, content={
@@ -243,15 +270,118 @@ async def delete_prediction(prediction_id: str, db: Session = Depends(get_db)):
     
 @prediction_router.get("/make-report/{prediction_id}",
     status_code=200,
-    summary="Make a report for a prediction",
+    summary="Generate dental radiology report",
     description="""
-    Make a report for a prediction by its ID
+    Generate a detailed dental radiology report for a prediction, including analysis and recommendations.
+    The report will be emailed to the doctor.
+    
+    Required:
+    - prediction_id: UUID of the prediction
+    - Authorization header with doctor's token
     """,
     responses={
-        200: {"description": "Report created successfully"},
-        404: {"description": "Prediction not found"},
+        200: {"description": "Report generated and emailed successfully"},
+        401: {"description": "Unauthorized - must be a doctor"},
+        404: {"description": "Prediction or patient not found"},
         500: {"description": "Internal server error"}
     }
 )
-async def make_report(prediction_id: str, db: Session = Depends(get_db)):
-    pass
+async def make_report(request: Request, prediction_id: str, db: Session = Depends(get_db)):
+    try:
+        # Verify doctor authorization
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
+            
+        user = db.query(User).filter(
+            User.id == decoded_token.get("user_id"),
+            User.user_type == "doctor"
+        ).first()
+        
+        if not user:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
+
+        # Get prediction with labels
+        prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
+        if not prediction:
+            return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+
+        # Get patient details
+        patient = db.query(Patient).filter(Patient.id == prediction.patient).first()
+        if not patient:
+            return JSONResponse(status_code=404, content={"error": "Patient not found"})
+
+        # Get prediction labels and format findings
+        labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
+        if not labels:
+            return JSONResponse(status_code=404, content={"error": "No findings available for this prediction"})
+
+        findings = "\n".join([
+            f"{label.name}: {label.percentage:.1f}% confidence" 
+            for label in labels
+        ])
+
+        # Generate report content
+        try:
+            report_content = report_generate(
+                prediction_str=findings,
+                doctor_name=user.name,
+                doctor_email=user.email,
+                doctor_phone=user.phone,
+                patient_name=f"{patient.first_name} {patient.last_name}",
+                patient_age=patient.age,
+                patient_gender=patient.gender,
+                patient_phone=patient.phone,
+                date=today().strftime("%Y-%m-%d")
+            )
+            
+            if isinstance(report_content, JSONResponse):
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to generate report content"}
+                )
+
+            # Create PDF report
+            report_pdf = create_dental_radiology_report(
+                patient_name=f"{patient.first_name} {patient.last_name}",
+                report_content=report_content
+            )
+            
+            if not report_pdf:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to create PDF report"}
+                )
+
+            # Send email with report
+            email_sent = send_email_with_attachment(
+                to_email=user.email,
+                patient_name=f"{patient.first_name} {patient.last_name}",
+                pdf_file_path=report_pdf
+            )
+
+            if not email_sent:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to send email with report"}
+                )
+
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "Report generated and sent successfully",
+                    "email": user.email
+                }
+            )
+
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Report generation failed: {str(e)}"}
+            )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Unexpected error: {str(e)}"}
+        )

@@ -123,6 +123,8 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
             "name": user.name,
             "email": user.email,
             "bio": user.bio,
+            "credits": user.credits,
+            "account_type": user.account_type,
         }
         
         profile_url = f"{request.base_url}{user.profile_url}"
@@ -412,7 +414,11 @@ async def google_login(user: GoogleLoginSchema, db: Session = Depends(get_db)):
             db.add(new_user)
             db.commit()
             db.refresh(new_user)
-        jwt_token = signJWT(str(new_user.id))
+            db_user = new_user
+        else:
+            db_user = user_exists
+            
+        jwt_token = signJWT(str(db_user.id))
         return JSONResponse(status_code=200, content={"access_token": jwt_token["access_token"], "token_type": "bearer", "message": "Google login successful"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -454,3 +460,30 @@ async def upload_profile_picture(request: Request, file: UploadFile = File(...),
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
         
+@user_router.get("/check-token-validity",
+    response_model=dict,
+    status_code=200,
+    summary="Check token validity",
+    description="Check if token is valid",  
+    responses={
+        200: {"description": "Token is valid"},
+        401: {"description": "Token is invalid"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def check_token_validity(request: Request):
+    try:
+        token = request.headers.get("Authorization", "authorization")
+        if token.split(" ")[0] == "Bearer":
+            token = token.split(" ")[1]
+        if not token:
+            return JSONResponse(status_code=401, content={"error": "Invalid or missing Authorization header"})
+        
+        decoded_token = decodeJWT(token)
+        user_id = decoded_token.get("user_id") if decoded_token else None
+        if not user_id:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        return JSONResponse(status_code=200, content={"message": "Token is valid"})
+    except Exception as e:
+        return JSONResponse(status_code=401, content={"error": str(e)})

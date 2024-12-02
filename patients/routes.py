@@ -1,25 +1,131 @@
 from fastapi import APIRouter, Request, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 from .schema import PatientCreateSchema, PatientUpdateSchema
-from .model import Patient, PatientXray
+from .model import Patient, PatientXray, Gender
 from db.db import get_db
 from auth.model import User
 from fastapi.responses import JSONResponse
-from utils.auth import get_current_user
+from utils.auth import get_current_user, verify_token
 from sqlalchemy import insert, select, update, delete
 import os
+
+
 patient_router = APIRouter()
+
+@patient_router.get("/search",
+    response_model=dict,
+    status_code=200,
+    summary="Search patients",
+    description="""
+    Search patients by name or phone number. Returns matching patients for the logged in doctor.
+    
+    Required parameters:
+    - query: Search term to match against patient name or phone
+    
+    Required headers:
+    - Authorization: Bearer token from login
+    """,
+    responses={
+        200: {"description": "Patients retrieved successfully"},
+        401: {"description": "Unauthorized - Invalid token"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def search_patients(request: Request, query: str, db: Session = Depends(get_db)):
+    try:
+        current_user = get_current_user(request)
+        if not current_user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+
+        # Split query into words and create search conditions for each word
+        search_terms = query.split()
+        search_conditions = []
+        
+        for term in search_terms:
+            search_conditions.append(
+                (
+                    Patient.first_name.ilike(f"%{term}%") |
+                    Patient.last_name.ilike(f"%{term}%") |
+                    Patient.phone.ilike(f"%{term}%")
+                )
+            )
+
+        # Search patients belonging to current doctor
+        stmt = (
+            select(Patient)
+            .where(
+                Patient.doctor_id == current_user,
+                *search_conditions  # Unpack all search conditions
+            )
+        )
+        patients = db.execute(stmt).scalars().all()
+
+        return JSONResponse(
+            status_code=200, 
+            content={
+                "patients": [
+                    {
+                        "id": p.id,
+                        "first_name": p.first_name,
+                        "last_name": p.last_name,
+                        "phone": p.phone,
+                        "age": p.age,
+                        "date_of_birth": p.date_of_birth.isoformat(),
+                        "gender": p.gender.value
+                    } 
+                    for p in patients
+                ]
+            }
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@patient_router.get("/validate-patient/{patient_id}",
+    response_model=dict,
+    status_code=200,
+    summary="Validate patient",
+    description="""
+    Validate a patient by ID
+    """,
+    responses={
+        200: {"description": "Patient validated successfully"},
+        401: {"description": "Unauthorized - Invalid token"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def validate_patient(request: Request, patient_id: str, db: Session = Depends(get_db)):
+    try:
+        current_user = get_current_user(request)
+        
+        if not current_user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        if not patient:
+            return JSONResponse(status_code=404, content={"error": "Patient not found"})
+        
+        return JSONResponse(status_code=200, content={"patient": {
+            "id": patient.id,
+            "first_name": patient.first_name,
+            "last_name": patient.last_name,
+            "phone": patient.phone,
+        }})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+        
 
 @patient_router.post("/create",
     response_model=dict,
     status_code=201,
     summary="Create a new patient",
     description="""
-    Create a new patient record with name, phone, date of birth and gender
+    Create a new patient record with first name, last name, phone, age, date of birth and gender
     
     Required fields:
-    - name: Patient's full name
+    - first_name: Patient's first name
+    - last_name: Patient's last name 
     - phone: Valid phone number
+    - age: Patient's age
     - date_of_birth: Date of birth in ISO format
     - gender: One of ["male", "female", "other"]
     
@@ -38,15 +144,34 @@ async def create_patient(request: Request, patient: PatientCreateSchema, db: Ses
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
-        if patient.name == "" or patient.phone == "" or patient.date_of_birth == "" or patient.gender == "":
+        if not all([patient.first_name, patient.last_name, patient.phone, patient.age, patient.date_of_birth, patient.gender]):
             return JSONResponse(status_code=400, content={"error": "All fields are required"})
         
+        # Check if patient already exists
+        existing_patient = db.query(Patient).filter(Patient.phone == patient.phone).first()
+        if existing_patient:
+            return JSONResponse(status_code=400, content={"error": "Patient already exists with this phone number"})
+        
         stmt = insert(Patient).values(doctor_id=current_user, **patient.model_dump())
-        db.execute(stmt)
+        result = db.execute(stmt)
         db.commit()
-        return JSONResponse(status_code=201, content={"message": "Patient created successfully"})
+
+        # Get the newly created patient
+        new_patient = db.query(Patient).filter(Patient.id == result.inserted_primary_key[0]).first()
+      
+        return JSONResponse(status_code=201, content={"message": "Patient created successfully", "patient": {
+            "id": new_patient.id,
+            "first_name": new_patient.first_name,
+            "last_name": new_patient.last_name,
+            "phone": new_patient.phone,
+            "age": new_patient.age,
+            "date_of_birth": new_patient.date_of_birth.isoformat(),
+            "gender": new_patient.gender.value,
+            "created_at": new_patient.created_at.isoformat(),
+            "updated_at": new_patient.updated_at.isoformat()
+        }})
     except Exception as e:
-        return JSONResponse(status_code=500, content={"message": "Error creating patient", "error": str(e)})
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @patient_router.get("/all",
     response_model=dict,
@@ -72,7 +197,19 @@ async def get_all_patients(request: Request, db: Session = Depends(get_db)):
         
         stmt = select(Patient)
         patients = db.execute(stmt).scalars().all()
-        return JSONResponse(status_code=200, content={"patients": patients})
+        return JSONResponse(status_code=200, content={"patients": [
+            {
+                "id": p.id,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
+                "phone": p.phone,
+                "age": p.age,
+                "date_of_birth": p.date_of_birth.isoformat(),
+                "gender": p.gender.value,
+                "created_at": p.created_at.isoformat(),
+                "updated_at": p.updated_at.isoformat()
+            } for p in patients
+        ]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": "Error getting patients", "error": str(e)})
     
@@ -102,11 +239,28 @@ async def get_patient(request: Request, patient_id: str, db: Session = Depends(g
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
+        user = db.query(User).filter(User.id == current_user).first()
+        if not user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
         stmt = select(Patient).where(Patient.id == patient_id)
         patient = db.execute(stmt).scalar_one_or_none()
         if not patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
-        return JSONResponse(status_code=200, content={"patient": patient})
+        return JSONResponse(status_code=200, content={"patient": {
+            "id": patient.id,
+            "first_name": patient.first_name,
+            "last_name": patient.last_name,
+            "phone": patient.phone,
+            "age": patient.age,
+            "date_of_birth": patient.date_of_birth.isoformat(),
+            "gender": patient.gender.value,
+            "created_at": patient.created_at.isoformat(),
+            "updated_at": patient.updated_at.isoformat()
+        }, "doctor": {
+            "id": user.id,
+            "credits": user.credits
+        }})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": "Error getting patient", "error": str(e)})
     
@@ -128,15 +282,38 @@ async def get_patient(request: Request, patient_id: str, db: Session = Depends(g
 )
 async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db)):
     try:
-        current_user = get_current_user(request)
-        if not current_user:
+        decoded_user = verify_token(request)
+
+        if not decoded_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
-        stmt = select(Patient).where(Patient.doctor_id == current_user)
-        patient = db.execute(stmt).scalar_one_or_none()
-        return JSONResponse(status_code=200, content={"patient": patient})
+        user_id = decoded_user['user_id']
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        stmt = select(Patient).where(Patient.doctor_id == user_id).order_by(Patient.created_at.desc())
+        patients = db.execute(stmt).scalars().all()
+        
+        if not patients:
+            return JSONResponse(status_code=200, content={"patients": []})
+            
+        return JSONResponse(status_code=200, content={"patients": [
+            {
+                "id": p.id,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
+                "phone": p.phone,
+                "age": p.age,
+                "date_of_birth": p.date_of_birth.isoformat(),
+                "gender": p.gender.value,
+                "created_at": p.created_at.isoformat(),
+                "updated_at": p.updated_at.isoformat()
+            } for p in patients
+        ]})
     except Exception as e:
-        return JSONResponse(status_code=500, content={"message": "Error getting patient", "error": str(e)})
+        return JSONResponse(status_code=500, content={"message": "Error getting patients", "error": str(e)})
 
 @patient_router.patch("/update/{patient_id}",
     response_model=dict,
@@ -146,8 +323,10 @@ async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db))
     Update details of a specific patient
     
     Optional fields (at least one required):
-    - name: Patient's full name
-    - phone: Valid phone number  
+    - first_name: Patient's first name
+    - last_name: Patient's last name
+    - phone: Valid phone number
+    - age: Patient's age  
     - date_of_birth: Date of birth in ISO format
     - gender: One of ["male", "female", "other"]
     
@@ -169,6 +348,12 @@ async def update_patient(request: Request, patient_id: str, patient: PatientUpda
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        # Check if patient exists
+        stmt = select(Patient).where(Patient.id == patient_id)
+        existing_patient = db.execute(stmt).scalar_one_or_none()
+        if not existing_patient:
+            return JSONResponse(status_code=404, content={"error": "Patient not found"})
         
         # partial update
         stmt = update(Patient).where(Patient.id == patient_id).values(**patient.model_dump(exclude_unset=True))
@@ -204,6 +389,12 @@ async def delete_patient(request: Request, patient_id: str, db: Session = Depend
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
+        # Check if patient exists
+        stmt = select(Patient).where(Patient.id == patient_id)
+        existing_patient = db.execute(stmt).scalar_one_or_none()
+        if not existing_patient:
+            return JSONResponse(status_code=404, content={"error": "Patient not found"})
+            
         stmt = delete(Patient).where(Patient.id == patient_id)
         db.execute(stmt)
         db.commit()
@@ -266,5 +457,42 @@ async def upload_xray(
         db.commit()
         
         return JSONResponse(status_code=200, content={"message": "X-ray uploaded successfully"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@patient_router.get("/xray/{patient_id}",
+    response_model=dict,
+    status_code=200,
+    summary="Get patient X-ray",
+    description="""
+    Get all X-ray images for a specific patient
+    
+    Required parameters:
+    - patient_id: UUID of the patient
+    """,
+    responses={
+        200: {"description": "X-ray images retrieved successfully"},
+        401: {"description": "Unauthorized - Invalid token"},
+        404: {"description": "Patient or user not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_xray(request: Request, patient_id: str, db: Session = Depends(get_db)):
+    try:
+        current_user = get_current_user(request)
+        if not current_user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        stmt = select(PatientXray).where(PatientXray.patient == patient_id).order_by(PatientXray.created_at.desc())
+        xrays = db.execute(stmt).scalars().all()
+
+        return JSONResponse(status_code=200, content={"xrays": [
+            {
+                "id": x.id, 
+                "original_image": f"{request.base_url}{x.original_image}",
+                "annotated_image": f"{request.base_url}{x.annotated_image}" if x.annotated_image else None,
+                "prediction_id": x.prediction_id if x.prediction_id else None
+            } for x in xrays
+        ]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

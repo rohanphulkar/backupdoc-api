@@ -41,7 +41,7 @@ def signJWT(user_id: str) -> Dict[str, str]:
     """Generate JWT token with user ID and expiration."""
     payload = {
         "user_id": user_id,
-        "exp": datetime.utcnow() + timedelta(minutes=60)
+        "exp": datetime.now() + timedelta(days=30)
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return token_response(token)

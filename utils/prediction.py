@@ -30,3 +30,4 @@ def calculate_class_percentage(prediction):
         return {class_name: 0 for class_name in class_areas}
 
     return class_percentages
+
