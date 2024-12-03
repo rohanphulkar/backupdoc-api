@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from utils.auth import get_current_user, verify_token
 from sqlalchemy import insert, select, update, delete
 import os
-from predict.model import Prediction
+from predict.model import Prediction, Label
 
 
 patient_router = APIRouter()
@@ -390,26 +390,41 @@ async def delete_patient(request: Request, patient_id: str, db: Session = Depend
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
-        # Check if patient exists
+        # Check if patient exists and get patient record
         stmt = select(Patient).where(Patient.id == patient_id)
         existing_patient = db.execute(stmt).scalar_one_or_none()
         if not existing_patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
             
-        # Delete all x-rays for this patient first
-        stmt = delete(PatientXray).where(PatientXray.patient == patient_id)
-        db.execute(stmt)
+        # Delete all associated records in a transaction
+        try:
+            # Delete all x-rays for this patient
+            x_ray_stmt = delete(PatientXray).where(PatientXray.patient == patient_id)
+            db.execute(x_ray_stmt)
 
-        # Delete all predictions related to this patient
-        stmt = delete(Prediction).where(Prediction.patient == patient_id)
-        db.execute(stmt)
-        
-        # Then delete the patient
-        stmt = delete(Patient).where(Patient.id == patient_id)
-        db.execute(stmt)
-        db.commit()
-        return JSONResponse(status_code=200, content={"message": "Patient deleted successfully"})
+            # Get and delete all labels for patient's predictions
+            predictions = db.query(Prediction).filter(Prediction.patient == patient_id).all()
+            for prediction in predictions:
+                label_stmt = delete(Label).where(Label.prediction_id == prediction.id)
+                db.execute(label_stmt)
+
+            # Delete all predictions
+            pred_stmt = delete(Prediction).where(Prediction.patient == patient_id)
+            db.execute(pred_stmt)
+            
+            # Finally delete the patient
+            patient_stmt = delete(Patient).where(Patient.id == patient_id)
+            db.execute(patient_stmt)
+            
+            db.commit()
+            return JSONResponse(status_code=200, content={"message": "Patient deleted successfully"})
+            
+        except Exception as e:
+            db.rollback()
+            raise e
+            
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"message": "Error deleting patient", "error": str(e)})
     
 
