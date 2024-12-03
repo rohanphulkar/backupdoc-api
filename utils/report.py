@@ -50,6 +50,7 @@ Please format the report in markdown with the following sections:
 Please include:
 1. Analysis of each detected pathology with severity level
 2. Present the information in clear sections with bullet points where appropriate
+3. And don't give it any title or heading
 """
     try:
         # Set safety settings and parameters for better results
