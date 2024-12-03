@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from utils.auth import get_current_user, verify_token
 from sqlalchemy import insert, select, update, delete
 import os
+from predict.model import Prediction
 
 
 patient_router = APIRouter()
@@ -395,6 +396,15 @@ async def delete_patient(request: Request, patient_id: str, db: Session = Depend
         if not existing_patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
             
+        # Delete all x-rays for this patient first
+        stmt = delete(PatientXray).where(PatientXray.patient == patient_id)
+        db.execute(stmt)
+
+        # Delete all predictions related to this patient
+        stmt = delete(Prediction).where(Prediction.patient == patient_id)
+        db.execute(stmt)
+        
+        # Then delete the patient
         stmt = delete(Patient).where(Patient.id == patient_id)
         db.execute(stmt)
         db.commit()
