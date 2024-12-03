@@ -21,7 +21,7 @@ class User(Base):
     is_active = Column(TINYINT(1), default=1)
     user_type = Column(String(255), nullable=False, default="doctor")
     account_type = Column(String(255), nullable=False, default="free")
-    credits = Column(Integer, default=0)
+    credits = Column(Integer, default=3)
     credit_expiry = Column(DateTime, nullable=True)
     is_annual = Column(TINYINT(1), default=0)
     last_credit_updated_at = Column(DateTime, nullable=True)
