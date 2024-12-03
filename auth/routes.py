@@ -60,7 +60,8 @@ async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        return JSONResponse(status_code=201, content={"message": "User created successfully"})
+        jwt_token = signJWT(str(new_user.id))
+        return JSONResponse(status_code=201, content={"access_token": jwt_token["access_token"],"message": "User created successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

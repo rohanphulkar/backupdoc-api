@@ -46,14 +46,10 @@ Please format the report in markdown with the following sections:
 **Analysis:**
 [Detailed analysis of each pathology]
 
-**Treatment Recommendations:**
-[Treatment options with costs and recovery times]
 
 Please include:
 1. Analysis of each detected pathology with severity level
-2. Treatment recommendations based on caries with pulp approximation or overlapping
-3. Treatment options for each case with estimated costs and recovery time
-4. Present the information in clear sections with bullet points where appropriate
+2. Present the information in clear sections with bullet points where appropriate
 """
     try:
         # Set safety settings and parameters for better results

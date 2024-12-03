@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Request, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
 from db.db import get_db
 from .model import Prediction, Label
@@ -92,11 +92,23 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
         
         prediction.original_image = f"{request.base_url}{prediction.original_image}"
         prediction.predicted_image = f"{request.base_url}{prediction.predicted_image}"
+
+        # Fetch all previous predictions excluding the current one
+        previous_predictions = db.query(Prediction).filter(
+            Prediction.patient == prediction.patient,
+            Prediction.id != prediction_id
+        ).order_by(Prediction.created_at.desc()).all()
+        
+        if previous_predictions:
+            for prev in previous_predictions:
+                prev.original_image = f"{request.base_url}{prev.original_image}"
+                prev.predicted_image = f"{request.base_url}{prev.predicted_image}"
         
         labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
         
         prediction_data = {
             "prediction": PredictionResponse.from_orm(prediction),
+            "previous_predictions": [PredictionResponse.from_orm(prev) for prev in previous_predictions],
             "labels": [LabelResponse.from_orm(label) for label in labels]
         }
         
@@ -267,6 +279,49 @@ async def delete_prediction(prediction_id: str, db: Session = Depends(get_db)):
         return JSONResponse(status_code=200, content={"message": "Prediction deleted successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+async def generate_and_send_report(
+    prediction_id: str,
+    user: User,
+    patient: Patient,
+    findings: str,
+    db: Session
+):
+    """Background task to generate and send the report"""
+    try:
+        report_content = report_generate(
+            prediction_str=findings,
+            doctor_name=user.name,
+            doctor_email=user.email,
+            doctor_phone=user.phone,
+            patient_name=f"{patient.first_name} {patient.last_name}",
+            patient_age=patient.age,
+            patient_gender=patient.gender,
+            patient_phone=patient.phone,
+            date=today().strftime("%Y-%m-%d")
+        )
+
+        if isinstance(report_content, JSONResponse):
+            return
+
+        # Create PDF report
+        report_pdf = create_dental_radiology_report(
+            patient_name=f"{patient.first_name} {patient.last_name}",
+            report_content=report_content
+        )
+        
+        if not report_pdf:
+            return
+
+        # Send email with report
+        send_email_with_attachment(
+            to_email=user.email,
+            patient_name=f"{patient.first_name} {patient.last_name}",
+            pdf_file_path=report_pdf
+        )
+
+    except Exception:
+        pass
     
 @prediction_router.get("/make-report/{prediction_id}",
     status_code=200,
@@ -280,13 +335,18 @@ async def delete_prediction(prediction_id: str, db: Session = Depends(get_db)):
     - Authorization header with doctor's token
     """,
     responses={
-        200: {"description": "Report generated and emailed successfully"},
+        200: {"description": "Report generation started"},
         401: {"description": "Unauthorized - must be a doctor"},
         404: {"description": "Prediction or patient not found"},
         500: {"description": "Internal server error"}
     }
 )
-async def make_report(request: Request, prediction_id: str, db: Session = Depends(get_db)):
+async def make_report(
+    request: Request,
+    prediction_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     try:
         # Verify doctor authorization
         decoded_token = verify_token(request)
@@ -321,64 +381,23 @@ async def make_report(request: Request, prediction_id: str, db: Session = Depend
             for label in labels
         ])
 
-        # Generate report content
-        try:
-            report_content = report_generate(
-                prediction_str=findings,
-                doctor_name=user.name,
-                doctor_email=user.email,
-                doctor_phone=user.phone,
-                patient_name=f"{patient.first_name} {patient.last_name}",
-                patient_age=patient.age,
-                patient_gender=patient.gender,
-                patient_phone=patient.phone,
-                date=today().strftime("%Y-%m-%d")
-            )
-            
-            if isinstance(report_content, JSONResponse):
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": "Failed to generate report content"}
-                )
+        # Add report generation to background tasks
+        background_tasks.add_task(
+            generate_and_send_report,
+            prediction_id=prediction_id,
+            user=user,
+            patient=patient,
+            findings=findings,
+            db=db
+        )
 
-            # Create PDF report
-            report_pdf = create_dental_radiology_report(
-                patient_name=f"{patient.first_name} {patient.last_name}",
-                report_content=report_content
-            )
-            
-            if not report_pdf:
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": "Failed to create PDF report"}
-                )
-
-            # Send email with report
-            email_sent = send_email_with_attachment(
-                to_email=user.email,
-                patient_name=f"{patient.first_name} {patient.last_name}",
-                pdf_file_path=report_pdf
-            )
-
-            if not email_sent:
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": "Failed to send email with report"}
-                )
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "message": "Report generated and sent successfully",
-                    "email": user.email
-                }
-            )
-
-        except Exception as e:
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Report generation failed: {str(e)}"}
-            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Report generation started. You will receive an email when ready.",
+                "email": user.email
+            }
+        )
 
     except Exception as e:
         return JSONResponse(
