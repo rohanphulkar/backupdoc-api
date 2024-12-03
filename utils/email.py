@@ -20,8 +20,7 @@ def send_email(sender_email, sender_password, receiver_email, subject, body):
         message.attach(MIMEText(body, 'plain'))
         
         # Create SMTP session for sending the mail
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)  # Use Gmail's SMTP server
-        server.starttls()  # Enable security
+        server = smtplib.SMTP_SSL(EMAIL_HOST, EMAIL_PORT)  # Use Gmail's SMTP server
         
         # Login with the sender's email and password
         server.login(sender_email, sender_password)
