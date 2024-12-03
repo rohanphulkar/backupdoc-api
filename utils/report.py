@@ -247,7 +247,8 @@ BackupDoc.AI Team"""
             msg.attach(part)
 
         # Send email
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
 
