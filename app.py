@@ -9,6 +9,7 @@ from auth.routes import user_router
 from patients.routes import patient_router
 from payment.routes import payment_router
 from predict.routes import prediction_router
+from contact.routes import contact_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -40,3 +41,4 @@ app.include_router(user_router, prefix="/user", tags=["user"])
 app.include_router(patient_router, prefix="/patient", tags=["patient"])
 app.include_router(prediction_router, prefix="/predict", tags=["predict"])
 app.include_router(payment_router, tags=["payment"])
+app.include_router(contact_router, tags=["contact"])

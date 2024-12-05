@@ -65,3 +65,30 @@ Backup Doc
     except Exception as e:
         print(f"Failed to send forgot password email: {e}")
         return False
+
+def contact_us_email(first_name, last_name, email, topic, company_name, company_size, query):
+    try:
+        subject = f"New Contact Us Query from {first_name} {last_name}"
+        body = f"""
+Dear Support Team,
+
+You have received a new contact us query. Here are the details:
+
+First Name: {first_name}
+Last Name: {last_name}
+Email: {email}
+Topic: {topic}
+Company Name: {company_name}
+Company Size: {company_size}
+Query: {query}
+
+Please address this query at your earliest convenience.
+
+Best regards,
+Your Automated Email System
+"""
+        send_email(sender_email, sender_password, EMAIL_SENDER, subject, body)
+        return True
+    except Exception as e:
+        print(f"Failed to send contact us email: {e}")
+        return False

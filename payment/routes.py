@@ -366,8 +366,8 @@ async def subscribe(
         subscription_data = {
             'plan_id': plan["plan_id"],
             'customer_notify': 1,
-            'quantity': 12 if payment.plan_type == "monthly" else 1,
-            'total_count': 12 if payment.plan_type == "monthly" else 1,
+            'quantity': 12 if payment.plan_type == "yearly" else 1,
+            'total_count': 12 if payment.plan_type == "yearly" else 1,
             'start_at': int(time.time()) + 600,
             'notes': {'message': 'Subscription Payment'},
         }
