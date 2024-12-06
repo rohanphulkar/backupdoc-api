@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from db.db import get_db
 from .model import Prediction, Label
@@ -15,10 +15,12 @@ from PIL import Image
 import cv2
 import random, os
 import datetime
+import json
 from decouple import config
 from patients.model import PatientXray
 from utils.report import report_generate, create_dental_radiology_report, send_email_with_attachment
 from dateutil.utils import today
+
 
 prediction_router = APIRouter()
 
@@ -177,6 +179,10 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
                 return JSONResponse(status_code=500, content={"error": "Prediction failed"})
                 
             prediction_json = prediction_result.json()
+            
+            # Store prediction data with sequential class_ids
+            prediction_str = json.dumps(prediction_json)
+            
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Model prediction failed: {str(e)}"})
 
@@ -217,7 +223,8 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
                 patient=xray.patient,
                 original_image=xray.original_image,
                 predicted_image=output_path,
-                is_annotated=True
+                is_annotated=True,
+                prediction=prediction_str
             )
             db.add(prediction)
             db.commit()
@@ -404,3 +411,111 @@ async def make_report(
             status_code=500,
             content={"error": f"Unexpected error: {str(e)}"}
         )
+    
+@prediction_router.delete("/delete-label/{label_id}",
+    status_code=200,
+    summary="Delete a label",
+    description="""
+    Delete a label by its ID
+    """,
+    responses={
+        200: {"description": "Label deleted successfully"},
+        404: {"description": "Label not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def delete_label(request: Request, label_id: str, db: Session = Depends(get_db)):
+    try:
+        # Verify doctor authorization
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
+            
+        user = db.query(User).filter(
+            User.id == decoded_token.get("user_id"),
+            User.user_type == "doctor"
+        ).first()
+        
+        if not user:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
+
+        label = db.query(Label).filter(Label.id == label_id).first()
+        if not label:
+            return JSONResponse(status_code=404, content={"error": "Label not found"})
+        
+        prediction = db.query(Prediction).filter(Prediction.id == label.prediction_id).first()
+        if not prediction:
+            return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+
+        # Delete old annotated image if it exists
+        if prediction.predicted_image and os.path.exists(prediction.predicted_image):
+            os.remove(prediction.predicted_image)
+
+        # Delete label from database
+        db.delete(label)
+        db.commit()
+
+        # Parse prediction JSON string properly
+        try:
+            prediction_data = json.loads(prediction.prediction)
+        except json.JSONDecodeError:
+            return JSONResponse(status_code=500, content={"error": "Invalid prediction JSON format"})
+
+        # Update prediction JSON to remove the deleted label and reassign class_ids
+        remaining_predictions = [
+            pred for pred in prediction_data["predictions"] 
+            if pred["class"] != label.name
+        ]
+        
+        # Reassign sequential class_ids
+        for idx, pred in enumerate(remaining_predictions, start=1):
+            pred["class_id"] = idx
+            
+        prediction_data["predictions"] = remaining_predictions
+        prediction.prediction = json.dumps(prediction_data)
+
+        # Regenerate annotated image if there are remaining predictions
+        if prediction_data["predictions"]:
+            image = cv2.imread(str(prediction.original_image))
+            if image is None:
+                return JSONResponse(status_code=400, content={"error": "Failed to load image"})
+
+            labels = [item["class"] for item in prediction_data["predictions"]]
+            detections = sv.Detections.from_inference(prediction_data)
+            
+            label_annotator = sv.LabelAnnotator()
+            mask_annotator = sv.MaskAnnotator()
+            
+            annotated_image = mask_annotator.annotate(scene=image, detections=detections)
+            annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
+
+            # Save new annotated image
+            annotated_image_pil = Image.fromarray(annotated_image)
+            current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            random_number = random.randint(1000, 9999)
+            random_filename = f"{current_datetime}-{random_number}.jpeg"
+
+            output_dir = os.path.join("uploads", "analyzed")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, random_filename)
+            
+            annotated_image_pil.save(output_path, optimize=True, quality=85)
+
+            # Update prediction with new image path
+            prediction.predicted_image = output_path
+            
+            # Update xray with new annotated image
+            xray = db.query(PatientXray).filter(PatientXray.prediction_id == prediction.id).first()
+            if xray:
+                xray.annotated_image = output_path
+
+        db.commit()
+
+        new_annotated_image = f"{request.base_url}{prediction.predicted_image}" if prediction.predicted_image else None
+        
+        return JSONResponse(status_code=200, content={
+            "message": "Label deleted successfully",
+            "annotated_image": new_annotated_image
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})

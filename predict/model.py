@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Boolean, Text, JSON
+from sqlalchemy.dialects.mysql import LONGTEXT
 from db.db import Base
 from datetime import datetime
 import uuid
@@ -16,6 +17,7 @@ class Prediction(Base):
     original_image = Column(String(255), nullable=False)  # Image path should not be null
     is_annotated = Column(Boolean, nullable=False, default=False)
     predicted_image = Column(String(255), nullable=True)  # Can be null initially
+    prediction = Column(LONGTEXT, nullable=False)  # Changed to LONGTEXT to handle very large strings
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
