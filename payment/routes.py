@@ -310,7 +310,7 @@ async def delete_order(
 
 @payment_router.post("/payment/create",
     summary="Create subscription payment", 
-    description="Initiates a new subscription payment with optional coupon",
+    description="Initiates a new subscription payment or plan upgrade with optional coupon",
     response_description="Returns payment/subscription ID for verification",
     responses={
         200: {"description": "Payment initiated successfully"},
@@ -334,9 +334,25 @@ async def subscribe(
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
+        # Check if user has active subscription
+        active_subscription = db.query(Subscription).filter(
+            Subscription.user == str(user.id),
+            Subscription.status == SubscriptionStatus.ACTIVE
+        ).first()
+
         plan = next((p for p in plans if p["name"].lower() == payment.plan.lower()), None)
         if not plan:
             return JSONResponse(status_code=404, content={"message": "Plan not found"})
+
+        # Validate plan upgrade
+        if active_subscription:
+            current_plan = user.account_type
+            requested_plan = payment.plan.lower()
+            
+            if current_plan == "premium":
+                return JSONResponse(status_code=400, content={"error": "Already on highest plan"})
+            elif current_plan == "doctor" and requested_plan != "premium":
+                return JSONResponse(status_code=400, content={"error": "Can only upgrade to premium plan"})
         
         coupon = None
         if payment.coupon:
@@ -362,11 +378,10 @@ async def subscribe(
         else:
             discount_amount = 0
 
-        
         subscription_data = {
             'plan_id': plan["plan_id"],
             'customer_notify': 1,
-            'quantity': 12 if payment.plan_type == "yearly" else 1,
+            'quantity': 1 if payment.plan_type == "yearly" else 1,
             'total_count': 12 if payment.plan_type == "yearly" else 1,
             'start_at': int(time.time()) + 600,
             'notes': {'message': 'Subscription Payment'},
@@ -383,8 +398,11 @@ async def subscribe(
 
         subscription = client.subscription.create(data=subscription_data)
 
-
-        print("subscription: ", subscription)
+        # Cancel existing subscription if upgrading
+        if active_subscription:
+            active_subscription.status = SubscriptionStatus.CANCELLED
+            db.add(active_subscription)
+            db.commit()
 
         order = Order(
             user=current_user,
@@ -660,3 +678,120 @@ async def apply_coupon(
             status_code=500,
             content={"error": f"Failed to apply coupon: {str(e)}"}
         )
+    
+@payment_router.post("/upgrade-subscription",
+    summary="Upgrade subscription",
+    description="Upgrades a subscription to a higher plan",
+    response_description="Returns confirmation of subscription upgrade",
+    responses={
+        200: {"description": "Subscription upgraded successfully"},
+        400: {"description": "Invalid subscription/Plan not found"},
+        500: {"description": "Server error while upgrading subscription"}
+    }
+)
+async def upgrade_subscription(
+    request: Request,
+    payment: PaymentCreateSchema = Body(..., description="Payment details including optional coupon"),
+    db: Session = Depends(get_db)
+):
+    try:
+        current_user = get_current_user(request)
+        if not current_user:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        
+        user = db.query(User).filter(User.id == current_user).first()
+        if not user:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        user_subscription = db.query(Subscription).filter(Subscription.user == current_user).first()
+        if not user_subscription:
+            return JSONResponse(status_code=404, content={"error": "Subscription not found"})
+        
+        if user_subscription.status != SubscriptionStatus.ACTIVE:
+            return JSONResponse(status_code=400, content={"error": "Subscription is not active"})
+        
+        if user_subscription.end_date < datetime.now():
+            return JSONResponse(status_code=400, content={"error": "Subscription has expired"})
+
+        # Determine upgrade plan based on current account type
+        upgrade_plan = None
+        if user.account_type == "free":
+            upgrade_plan = next((p for p in plans if p["name"].lower() == "doctor"), None)
+        elif user.account_type == "doctor":
+            upgrade_plan = next((p for p in plans if p["name"].lower() == "premium"), None)
+        else:
+            return JSONResponse(status_code=400, content={"error": "Already on highest plan"})
+
+        if not upgrade_plan:
+            return JSONResponse(status_code=404, content={"message": "Upgrade plan not found"})
+
+        # Handle coupon if provided
+        coupon = None
+        if payment.coupon:
+            coupon = db.query(Coupon).filter(
+                Coupon.code == payment.coupon,
+                Coupon.is_active == True,
+                Coupon.valid_until > datetime.now()
+            ).first()
+            if not coupon:
+                return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
+
+        # Get plan details and calculate amount
+        plan_details = client.plan.fetch(upgrade_plan["plan_id"])
+        amount = plan_details["item"]["amount"]
+
+        # Calculate discount if coupon exists
+        if coupon:
+            if coupon.type == "percentage":
+                discount_amount = int(amount * coupon.value / 100)
+            else:
+                discount_amount = int(coupon.value)
+                if discount_amount > amount:
+                    discount_amount = amount
+        else:
+            discount_amount = 0
+
+        # Prepare subscription data
+        subscription_data = {
+            'plan_id': upgrade_plan["plan_id"],
+            'customer_notify': 1,
+            'quantity': 12 if payment.plan_type == "yearly" else 1,
+            'total_count': 12 if payment.plan_type == "yearly" else 1,
+            'start_at': int(time.time()) + 600,
+            'notes': {'message': 'Subscription Upgrade Payment'},
+        }
+
+        if discount_amount > 0:
+            subscription_data['addons'] = [{
+                'item': {
+                    "name": f"Discount for {upgrade_plan['name']}",
+                    "amount": -discount_amount,
+                    "currency": "INR",
+                }
+            }]
+
+        # Create new subscription
+        subscription = client.subscription.create(data=subscription_data)
+
+        # Create order record
+        order = Order(
+            user=current_user,
+            plan=upgrade_plan["name"],
+            amount=amount,
+            discount_amount=discount_amount,
+            final_amount=amount - discount_amount,
+            payment_id=subscription["id"],
+            status=PaymentStatus.PENDING
+        )
+
+        db.add(order)
+        db.commit()
+
+        return JSONResponse(status_code=200, content={
+            "message": "Upgrade payment created successfully",
+            "subscription_id": subscription["id"],
+            "amount": amount - discount_amount
+        })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
