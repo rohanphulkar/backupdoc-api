@@ -88,7 +88,7 @@ async def create_coupon(
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
             
         user = db.query(User).filter(User.id == current_user).first()
-        if not user or user.role != "admin":
+        if not user or str(user.user_type) != "UserType.ADMIN":
             return JSONResponse(status_code=401, content={"error": "Admin access required"})
             
         new_coupon = Coupon(
