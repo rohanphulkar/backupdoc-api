@@ -12,6 +12,7 @@ import time
 import hmac
 import hashlib
 from datetime import datetime, timedelta
+from sqlalchemy import func
 
 
 client = razorpay.Client(auth=(config("RAZORPAY_KEY_ID"), config("RAZORPAY_KEY_SECRET")))
@@ -30,7 +31,7 @@ plans = [
 ]
     
 @payment_router.get("/coupon/get-all-coupons",
-    summary="Get all coupons",
+    summary="Get all coupons", 
     description="Retrieves list of all available discount coupons",
     response_description="Returns list of coupon objects with details like code, discount etc",
     responses={
@@ -41,7 +42,16 @@ plans = [
 async def get_all_coupons(db: Session = Depends(get_db)):
     try:
         coupons = db.query(Coupon).all()
-        return JSONResponse(status_code=200, content={"coupons": [coupon.to_dict() for coupon in coupons]})
+        return JSONResponse(status_code=200, content={"coupons": [{
+            "id": coupon.id,
+            "code": coupon.code,
+            "type": str(coupon.type),  # Convert enum to string
+            "value": coupon.value,
+            "max_uses": coupon.max_uses,
+            "valid_from": coupon.valid_from.isoformat() if coupon.valid_from else None,
+            "valid_until": coupon.valid_until.isoformat() if coupon.valid_until else None,
+            "is_active": coupon.is_active
+        } for coupon in coupons]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -88,7 +98,7 @@ async def create_coupon(
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
             
         user = db.query(User).filter(User.id == current_user).first()
-        if not user or str(user.user_type) != "UserType.ADMIN":
+        if not user or str(user.user_type) != "admin":
             return JSONResponse(status_code=401, content={"error": "Admin access required"})
             
         new_coupon = Coupon(
@@ -307,7 +317,6 @@ async def delete_order(
     
 
 
-
 @payment_router.post("/payment/create",
     summary="Create subscription payment", 
     description="Initiates a new subscription payment or plan upgrade with optional coupon",
@@ -349,9 +358,9 @@ async def subscribe(
             current_plan = user.account_type
             requested_plan = payment.plan.lower()
             
-            if current_plan == "premium":
+            if str(current_plan) == "premium":
                 return JSONResponse(status_code=400, content={"error": "Already on highest plan"})
-            elif current_plan == "doctor" and requested_plan != "premium":
+            elif str(current_plan) == "doctor" and requested_plan != "premium":
                 return JSONResponse(status_code=400, content={"error": "Can only upgrade to premium plan"})
         
         coupon = None
@@ -361,20 +370,41 @@ async def subscribe(
                 Coupon.is_active == True,
                 Coupon.valid_until > datetime.now()
             ).first()
+            
             if not coupon:
                 return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
+                
+            # Check if user has already used this coupon
+            coupon_usage = db.query(CouponUsers).filter(
+                CouponUsers.coupon_id == coupon.id,
+                CouponUsers.user_id == str(user.id)
+            ).first()
+            
+            if coupon_usage:
+                return JSONResponse(status_code=400, content={"error": "Coupon already used"})
 
         plan_details = client.plan.fetch(plan["plan_id"])
         
         amount = plan_details["item"]["amount"]
 
         if coupon:
-            if coupon.type == "percentage":
+            if str(coupon.type) == "percentage":
                 discount_amount = int(amount * coupon.value / 100)
             else:
                 discount_amount = int(coupon.value)
                 if discount_amount > amount:
                     discount_amount = amount
+                    
+            # Record coupon usage
+            coupon_user = CouponUsers(
+                coupon_id=coupon.id,
+                user_id=str(user.id)
+            )
+            db.add(coupon_user)
+            
+            # Update coupon used count
+            coupon.used_count += 1
+            db.add(coupon)
         else:
             discount_amount = 0
 
@@ -407,6 +437,7 @@ async def subscribe(
         order = Order(
             user=current_user,
             plan=plan["name"],
+            coupon=coupon.id if coupon else None,
             amount=amount,
             discount_amount=discount_amount,
             final_amount=amount - discount_amount,
@@ -617,14 +648,12 @@ async def apply_coupon(
     db: Session = Depends(get_db)
 ):
     try:
-        # Validate and fetch coupon
+        # Validate and fetch coupon - case insensitive search
         coupon = (
             db.query(Coupon)
             .filter(
-                Coupon.code == coupon_code.upper(),
+                func.lower(Coupon.code) == coupon_code.lower(),  # Case insensitive comparison
                 Coupon.is_active.is_(True),
-                Coupon.valid_until > datetime.now(),
-                Coupon.max_uses.is_(None) | (Coupon.used_count < Coupon.max_uses)
             )
             .first()
         )

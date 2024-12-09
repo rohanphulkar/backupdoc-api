@@ -28,6 +28,12 @@ class SubscriptionStatus(enum.Enum):
     PENDING = "pending"
 
 
+class CouponUsers(Base):
+    __tablename__ = "coupon_users"
+    
+    coupon_id = Column(String(36), ForeignKey("coupons.id"), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id"), primary_key=True)
+
 class Coupon(Base):
     __tablename__ = "coupons"
 
@@ -38,11 +44,11 @@ class Coupon(Base):
     max_uses = Column(Integer, default=None)
     used_count = Column(Integer, default=0)
     valid_from = Column(DateTime, nullable=False, default=datetime.now)
-    valid_until = Column(DateTime)
+    valid_until = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
-
+    used_by_users = relationship("User", secondary="coupon_users")
 
     @validator('code', pre=True, always=True)
     def validate_code(cls, v):
