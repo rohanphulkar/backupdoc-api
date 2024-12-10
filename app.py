@@ -9,7 +9,7 @@ from payment.routes import payment_router
 from predict.routes import prediction_router
 from contact.routes import contact_router
 from admin.config import create_admin
-
+from db.db import Base, engine
 
 middleware = [
     Middleware(
@@ -27,6 +27,8 @@ app = FastAPI(
     middleware=middleware, 
     license_info={"name": "Backupdoc", "url": "https://backupdoc.ai"}
 )
+
+Base.metadata.create_all(bind=engine)
 
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="profile_pictures")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from db.db import get_db
 from .model import Prediction, Label
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from .schema import PredictionResponse, LabelResponse
 from typing import List
 from utils.auth import verify_token
@@ -49,12 +49,9 @@ prediction_router = APIRouter()
         500: {"description": "Internal server error"}
     }
 )
-async def get_predictions(patient_id: str, db: AsyncSession = Depends(get_db)):
+async def get_predictions(patient_id: str, db: Session = Depends(get_db)):
     try:        
-        predictions = await db.execute(
-            select(Prediction).filter(Prediction.patient == patient_id)
-        )
-        predictions = predictions.scalars().all()
+        predictions = db.query(Prediction).filter(Prediction.patient == patient_id).all()
         return predictions
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -82,24 +79,18 @@ async def get_predictions(patient_id: str, db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def get_prediction(request: Request, prediction_id: str, db: AsyncSession = Depends(get_db)):
+async def get_prediction(request: Request, prediction_id: str, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
 
         user_id = decoded_token.get("user_id") if decoded_token else None
         
-        user = await db.execute(
-            select(User).filter(User.id == user_id)
-        )
-        user = user.scalar_one_or_none()
+        user = db.query(User).filter(User.id == user_id).first()
         
         if not user or str(user.user_type) != "doctor":
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
         
-        prediction = await db.execute(
-            select(Prediction).filter(Prediction.id == prediction_id)
-        )
-        prediction = prediction.scalar_one_or_none()
+        prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
@@ -108,23 +99,17 @@ async def get_prediction(request: Request, prediction_id: str, db: AsyncSession 
         prediction.predicted_image = f"{request.base_url}{prediction.predicted_image}"
 
         # Fetch all previous predictions excluding the current one
-        previous_predictions = await db.execute(
-            select(Prediction).filter(
-                Prediction.patient == prediction.patient,
-                Prediction.id != prediction_id
-            ).order_by(Prediction.created_at.desc())
-        )
-        previous_predictions = previous_predictions.scalars().all()
+        previous_predictions = db.query(Prediction).filter(
+            Prediction.patient == prediction.patient,
+            Prediction.id != prediction_id
+        ).order_by(Prediction.created_at.desc()).all()
         
         if previous_predictions:
             for prev in previous_predictions:
                 prev.original_image = f"{request.base_url}{prev.original_image}"
                 prev.predicted_image = f"{request.base_url}{prev.predicted_image}"
         
-        labels = await db.execute(
-            select(Label).filter(Label.prediction_id == prediction_id)
-        )
-        labels = labels.scalars().all()
+        labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
         
         prediction_data = {
             "prediction": PredictionResponse.from_orm(prediction),
@@ -163,16 +148,13 @@ async def get_prediction(request: Request, prediction_id: str, db: AsyncSession 
         500: {"description": "Internal server error"}
     }
 )
-async def create_prediction(request: Request, xray_id: str, db: AsyncSession = Depends(get_db)):
+async def create_prediction(request: Request, xray_id: str, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
 
         user_id = decoded_token.get("user_id") if decoded_token else None
         
-        user = await db.execute(
-            select(User).filter(User.id == user_id)
-        )
-        user = user.scalar_one_or_none()
+        user = db.query(User).filter(User.id == user_id).first()
 
         if not user or str(user.user_type) != "doctor" :
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
@@ -181,10 +163,7 @@ async def create_prediction(request: Request, xray_id: str, db: AsyncSession = D
         if not xray_id:
             return JSONResponse(status_code=400, content={"error": "X-ray ID is required"})
         
-        xray = await db.execute(
-            select(PatientXray).filter(PatientXray.id == xray_id)
-        )
-        xray = xray.scalar_one_or_none()
+        xray = db.query(PatientXray).filter(PatientXray.id == xray_id).first()
         
         if not xray:
             return JSONResponse(status_code=400, content={"error": "X-ray not found"})
@@ -252,7 +231,7 @@ async def create_prediction(request: Request, xray_id: str, db: AsyncSession = D
                 prediction=prediction_str
             )
             db.add(prediction)
-            await db.commit()
+            db.commit()
 
             # Bulk insert labels for better performance
             labels = [
@@ -264,15 +243,15 @@ async def create_prediction(request: Request, xray_id: str, db: AsyncSession = D
                 for class_name, percentage in class_percentages.items()
             ]
             db.add_all(labels)
-            await db.commit()
+            db.commit()
 
             # Update patient xray with annotated image
             xray.annotated_image = output_path
             xray.prediction_id = str(prediction.id)
-            await db.commit()
+            db.commit()
 
             user.credits -= 1
-            await db.commit()
+            db.commit()
             
             return JSONResponse(status_code=200, content={
                 "message": "Prediction created successfully",
@@ -280,7 +259,7 @@ async def create_prediction(request: Request, xray_id: str, db: AsyncSession = D
             })
             
         except Exception as e:
-            await db.rollback()
+            db.rollback()
             return JSONResponse(status_code=500, content={"error": f"Database operation failed: {str(e)}"})
             
     except Exception as e:
@@ -299,18 +278,15 @@ async def create_prediction(request: Request, xray_id: str, db: AsyncSession = D
         500: {"description": "Internal server error"}
     }
 )
-async def delete_prediction(prediction_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_prediction(prediction_id: str, db: Session = Depends(get_db)):
     try:
-        prediction = await db.execute(
-            select(Prediction).filter(Prediction.id == prediction_id)
-        )
-        prediction = prediction.scalar_one_or_none()
+        prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
         
-        await db.delete(prediction)
-        await db.commit()
+        db.delete(prediction)
+        db.commit()
         
         return JSONResponse(status_code=200, content={"message": "Prediction deleted successfully"})
     except Exception as e:
@@ -321,7 +297,7 @@ async def generate_and_send_report(
     user: User,
     patient: Patient,
     findings: str,
-    db: AsyncSession
+    db: Session
 ):
     """Background task to generate and send the report"""
     try:
@@ -381,7 +357,7 @@ async def make_report(
     request: Request,
     prediction_id: str,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
     try:
         # Verify doctor authorization
@@ -389,40 +365,28 @@ async def make_report(
         if not decoded_token:
             return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
             
-        user = await db.execute(
-            select(User).filter(
-                User.id == decoded_token.get("user_id"),
-                User.user_type == "doctor"
-            )
-        )
-        user = user.scalar_one_or_none()
+        user = db.query(User).filter(
+            User.id == decoded_token.get("user_id"),
+            User.user_type == "doctor"
+        ).first()
         
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
 
         # Get prediction with labels
-        prediction = await db.execute(
-            select(Prediction).filter(Prediction.id == prediction_id)
-        )
-        prediction = prediction.scalar_one_or_none()
+        prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
 
         # Get patient details
-        patient = await db.execute(
-            select(Patient).filter(Patient.id == prediction.patient)
-        )
-        patient = patient.scalar_one_or_none()
+        patient = db.query(Patient).filter(Patient.id == prediction.patient).first()
         
         if not patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
 
         # Get prediction labels and format findings
-        labels = await db.execute(
-            select(Label).filter(Label.prediction_id == prediction_id)
-        )
-        labels = labels.scalars().all()
+        labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
         
         if not labels:
             return JSONResponse(status_code=404, content={"error": "No findings available for this prediction"})
@@ -468,36 +432,27 @@ async def make_report(
         500: {"description": "Internal server error"}
     }
 )
-async def delete_label(request: Request, label_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_label(request: Request, label_id: str, db: Session = Depends(get_db)):
     try:
         # Verify doctor authorization
         decoded_token = verify_token(request)
         if not decoded_token:
             return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
             
-        user = await db.execute(
-            select(User).filter(
-                User.id == decoded_token.get("user_id"),
-                User.user_type == "doctor"
-            )
-        )
-        user = user.scalar_one_or_none()
+        user = db.query(User).filter(
+            User.id == decoded_token.get("user_id"),
+            User.user_type == "doctor"
+        ).first()
         
         if not user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
 
-        label = await db.execute(
-            select(Label).filter(Label.id == label_id)
-        )
-        label = label.scalar_one_or_none()
+        label = db.query(Label).filter(Label.id == label_id).first()
         
         if not label:
             return JSONResponse(status_code=404, content={"error": "Label not found"})
         
-        prediction = await db.execute(
-            select(Prediction).filter(Prediction.id == label.prediction_id)
-        )
-        prediction = prediction.scalar_one_or_none()
+        prediction = db.query(Prediction).filter(Prediction.id == label.prediction_id).first()
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
@@ -508,7 +463,7 @@ async def delete_label(request: Request, label_id: str, db: AsyncSession = Depen
 
         # Mark label as not included instead of deleting
         label.include = False
-        await db.commit()
+        db.commit()
 
         # Parse prediction JSON string properly
         try:
@@ -517,13 +472,10 @@ async def delete_label(request: Request, label_id: str, db: AsyncSession = Depen
             return JSONResponse(status_code=500, content={"error": "Invalid prediction JSON format"})
 
         # Get all labels for this prediction that are still included
-        included_labels = await db.execute(
-            select(Label).filter(
-                Label.prediction_id == prediction.id,
-                Label.include == True
-            )
-        )
-        included_labels = included_labels.scalars().all()
+        included_labels = db.query(Label).filter(
+            Label.prediction_id == prediction.id,
+            Label.include == True
+        ).all()
         included_label_names = [label.name for label in included_labels]
 
         # Filter predictions to only included labels and reassign class_ids
@@ -570,15 +522,12 @@ async def delete_label(request: Request, label_id: str, db: AsyncSession = Depen
             prediction.predicted_image = output_path
             
             # Update xray with new annotated image
-            xray = await db.execute(
-                select(PatientXray).filter(PatientXray.prediction_id == prediction.id)
-            )
-            xray = xray.scalar_one_or_none()
+            xray = db.query(PatientXray).filter(PatientXray.prediction_id == prediction.id).first()
             
             if xray:
                 xray.annotated_image = output_path
 
-        await db.commit()
+        db.commit()
 
         new_annotated_image = f"{request.base_url}{prediction.predicted_image}" if prediction.predicted_image else None
         

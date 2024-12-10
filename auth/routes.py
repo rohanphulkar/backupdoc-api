@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, Request, File, UploadFile
 from db.db import get_db
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from .model import User
 from .schema import *
 from fastapi.responses import JSONResponse
@@ -34,7 +34,7 @@ user_router = APIRouter()
         500: {"description": "Internal server error"}
     }
 )
-async def register(user: UserCreateSchema, db: AsyncSession = Depends(get_db)):
+async def register(user: UserCreateSchema, db: Session = Depends(get_db)):
     try:
         if not user.email or not user.password or not user.name or not user.phone:
             return JSONResponse(status_code=400, content={"error": "All fields are required"})
@@ -47,12 +47,12 @@ async def register(user: UserCreateSchema, db: AsyncSession = Depends(get_db)):
             return JSONResponse(status_code=400, content={"error": "Password must contain at least 8 characters, one uppercase letter, one lowercase letter, and one number"})
         
         # Check if user exists with same email
-        email_exists = (await db.execute(select(User).filter(User.email == user.email))).scalar_one_or_none()
+        email_exists = db.query(User).filter(User.email == user.email).first()
         if email_exists:
             return JSONResponse(status_code=400, content={"error": "User already exists with this email"})
 
         # Check if user exists with same phone
-        phone_exists = (await db.execute(select(User).filter(User.phone == user.phone))).scalar_one_or_none()
+        phone_exists = db.query(User).filter(User.phone == user.phone).first()
         if phone_exists:
             return JSONResponse(status_code=400, content={"error": "User already exists with this phone number"})
         
@@ -61,8 +61,8 @@ async def register(user: UserCreateSchema, db: AsyncSession = Depends(get_db)):
         if user.user_type == "admin":
             setattr(new_user, 'is_superuser', True)
         db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
+        db.commit()
+        db.refresh(new_user)
         jwt_token = signJWT(str(new_user.id))
         return JSONResponse(status_code=201, content={"access_token": jwt_token["access_token"],"message": "User created successfully"})
     except Exception as e:
@@ -86,12 +86,12 @@ async def register(user: UserCreateSchema, db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def login(user: UserSchema, db: AsyncSession = Depends(get_db)):
+async def login(user: UserSchema, db: Session = Depends(get_db)):
     try:
         if not user.email or not user.password:
             return JSONResponse(status_code=400, content={"error": "Email and password are required"})
          
-        db_user = (await db.execute(select(User).filter(User.email == user.email))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.email == user.email).first()
     
         if not db_user or not verify_password(user.password, str(db_user.password)):
             return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
@@ -117,10 +117,10 @@ async def login(user: UserSchema, db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def get_user(request: Request, db: AsyncSession = Depends(get_db)):   
+async def get_user(request: Request, db: Session = Depends(get_db)):   
     try:
         decoded_token = verify_token(request)
-        user = (await db.execute(select(User).filter(User.id == decoded_token["user_id"]))).scalar_one_or_none()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         user_data = {
@@ -157,14 +157,14 @@ async def get_user(request: Request, db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def forgot_password(user: ForgotPasswordSchema, request: Request, db: AsyncSession = Depends(get_db)):
+async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Session = Depends(get_db)):
     try:
         if not user.email:
             return JSONResponse(status_code=400, content={"error": "Email is required"})
         if not validate_email(user.email):
             return JSONResponse(status_code=400, content={"error": "Invalid email"})
             
-        db_user = (await db.execute(select(User).filter(User.email == user.email))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.email == user.email).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
@@ -174,8 +174,8 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Asyn
         setattr(db_user, 'reset_token', reset_token)
         setattr(db_user, 'reset_token_expiry', datetime.now() + timedelta(hours=3))
         
-        await db.commit()
-        await db.refresh(db_user)
+        db.commit()
+        db.refresh(db_user)
         
         if send_forgot_password_email(user.email, reset_link):
             return JSONResponse(status_code=200, content={"message": "Password reset email sent"})
@@ -207,9 +207,9 @@ async def forgot_password(user: ForgotPasswordSchema, request: Request, db: Asyn
         500: {"description": "Internal server error"}
     }
 )
-async def reset_password(token: str, user: ResetPasswordSchema, db: AsyncSession = Depends(get_db)):
+async def reset_password(token: str, user: ResetPasswordSchema, db: Session = Depends(get_db)):
     try:
-        db_user = (await db.execute(select(User).filter(User.reset_token == token))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.reset_token == token).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
@@ -229,8 +229,8 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: AsyncSession
         setattr(db_user, 'password', get_password_hash(user.password))
         setattr(db_user, 'reset_token', None)
         
-        await db.commit()
-        await db.refresh(db_user)
+        db.commit()
+        db.refresh(db_user)
         return JSONResponse(status_code=200, content={"message": "Password reset successfully"})
 
     except Exception as e:
@@ -259,11 +259,11 @@ async def reset_password(token: str, user: ResetPasswordSchema, db: AsyncSession
         500: {"description": "Internal server error"}
     }
 )
-async def change_password(user: ChangePasswordSchema, request: Request, db: AsyncSession = Depends(get_db)):
+async def change_password(user: ChangePasswordSchema, request: Request, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         
-        db_user = (await db.execute(select(User).filter(User.id == decoded_token["user_id"]))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
@@ -277,8 +277,8 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Asyn
             return JSONResponse(status_code=400, content={"error": "New passwords do not match"})
         
         setattr(db_user, 'password', get_password_hash(user.new_password))
-        await db.commit()
-        await db.refresh(db_user)
+        db.commit()
+        db.refresh(db_user)
         return JSONResponse(status_code=200, content={"message": "Password changed successfully"})
         
     except Exception as e:
@@ -305,11 +305,11 @@ async def change_password(user: ChangePasswordSchema, request: Request, db: Asyn
         500: {"description": "Internal server error"}
     }
 )
-async def update_profile(user: UserProfileUpdateSchema, request: Request, db: AsyncSession = Depends(get_db)):
+async def update_profile(user: UserProfileUpdateSchema, request: Request, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         
-        db_user = (await db.execute(select(User).filter(User.id == decoded_token["user_id"]))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
@@ -320,8 +320,8 @@ async def update_profile(user: UserProfileUpdateSchema, request: Request, db: As
         if user.bio:
             setattr(db_user, 'bio', user.bio)
             
-        await db.commit()
-        await db.refresh(db_user)
+        db.commit()
+        db.refresh(db_user)
         return JSONResponse(status_code=200, content={"message": "Profile updated successfully"})
         
     except Exception as e:
@@ -344,16 +344,16 @@ async def update_profile(user: UserProfileUpdateSchema, request: Request, db: As
         500: {"description": "Internal server error"}
     }
 )
-async def delete_profile(request: Request, db: AsyncSession = Depends(get_db)):
+async def delete_profile(request: Request, db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
         
-        db_user = (await db.execute(select(User).filter(User.id == decoded_token["user_id"]))).scalar_one_or_none()
+        db_user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not db_user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
             
-        await db.delete(db_user)
-        await db.commit()
+        db.delete(db_user)
+        db.commit()
         return JSONResponse(status_code=200, content={"message": "Profile deleted successfully"})
         
     except Exception as e:
@@ -370,9 +370,9 @@ async def delete_profile(request: Request, db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def get_all_users(db: AsyncSession = Depends(get_db)):
+async def get_all_users(db: Session = Depends(get_db)):
     try:
-        users = (await db.execute(select(User))).scalars().all()
+        users = db.query(User).all()
         return JSONResponse(status_code=200, content={"users": users})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -387,9 +387,9 @@ async def get_all_users(db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def doctor_list(db: AsyncSession = Depends(get_db)):
+async def doctor_list(db: Session = Depends(get_db)):
     try:
-        doctors = (await db.execute(select(User).filter(User.user_type == "doctor"))).scalars().all()
+        doctors = db.query(User).filter(User.user_type == "doctor").all()
         return JSONResponse(status_code=200, content={"doctors": doctors})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -410,17 +410,17 @@ async def doctor_list(db: AsyncSession = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def google_login(user: GoogleLoginSchema, db: AsyncSession = Depends(get_db)):
+async def google_login(user: GoogleLoginSchema, db: Session = Depends(get_db)):
     try:
         user_info = get_user_info(user.token)
         email = user_info["data"]['email']
         name = user_info["data"]['name']
-        user_exists = (await db.execute(select(User).filter(User.email == email))).scalar_one_or_none()
+        user_exists = db.query(User).filter(User.email == email).first()
         if not user_exists:
             new_user = User(email=email, name=name, password=None, user_type="doctor")
             db.add(new_user)
-            await db.commit()
-            await db.refresh(new_user)
+            db.commit()
+            db.refresh(new_user)
             db_user = new_user
         else:
             db_user = user_exists
@@ -440,10 +440,10 @@ async def google_login(user: GoogleLoginSchema, db: AsyncSession = Depends(get_d
         500: {"description": "Internal server error"}
     }
 )
-async def upload_profile_picture(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+async def upload_profile_picture(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
         decoded_token = verify_token(request)
-        user = (await db.execute(select(User).filter(User.id == decoded_token["user_id"]))).scalar_one_or_none()
+        user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
@@ -459,8 +459,8 @@ async def upload_profile_picture(request: Request, file: UploadFile = File(...),
             
         # Update user profile URL in database
         setattr(user, 'profile_url', str(file_path))
-        await db.commit()
-        await db.refresh(user)
+        db.commit()
+        db.refresh(user)
         
         return JSONResponse(status_code=200, content={"message": "Profile picture uploaded successfully"})
         
