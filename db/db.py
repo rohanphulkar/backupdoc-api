@@ -1,6 +1,6 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+import asyncio
 
 from decouple import config
 
@@ -11,27 +11,43 @@ DB_HOST = config('DB_HOST', 'localhost')
 DB_PORT = config('DB_PORT', '3306')
 DB_NAME = config('DB_NAME', 'fastapi')
 
-SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Using aiomysql as the async driver instead of pymysql
+SQLALCHEMY_DATABASE_URL = f"mysql+aiomysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-# Create engine with connection pooling
-engine = create_engine(
+# Create async engine
+engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
-    poolclass=QueuePool,
+    pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
     pool_timeout=30,
-    pool_recycle=1800
+    pool_recycle=1800,
+    echo=True  # Enable SQL logging
 )
 
 # Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = async_sessionmaker(
+    bind=engine,
+    expire_on_commit=False
+)
 
 # Create declarative base
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Create all tables
+async def init_models():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# Run the initialization
+asyncio.create_task(init_models())
+
+async def get_db():
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            raise e

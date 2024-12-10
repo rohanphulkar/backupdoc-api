@@ -1,5 +1,5 @@
-from sqlalchemy import Column, String, Integer, DateTime, Float, Enum as SQLAlchemyEnum, ForeignKey, Boolean
-from sqlalchemy.orm import relationship
+from sqlalchemy import String, Integer, DateTime, Float, Enum as SQLAlchemyEnum, ForeignKey, Boolean
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from db.db import Base
 import uuid
@@ -31,23 +31,23 @@ class SubscriptionStatus(enum.Enum):
 class CouponUsers(Base):
     __tablename__ = "coupon_users"
     
-    coupon_id = Column(String(36), ForeignKey("coupons.id"), primary_key=True)
-    user_id = Column(String(36), ForeignKey("users.id"), primary_key=True)
+    coupon_id: Mapped[str] = mapped_column(String(36), ForeignKey("coupons.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
 
 class Coupon(Base):
     __tablename__ = "coupons"
 
-    id = Column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    code = Column(String(255), nullable=False, unique=True)
-    type = Column(SQLAlchemyEnum(CouponType), nullable=False)
-    value = Column(Float, nullable=False)
-    max_uses = Column(Integer, default=None)
-    used_count = Column(Integer, default=0)
-    valid_from = Column(DateTime, nullable=False, default=datetime.now)
-    valid_until = Column(DateTime, nullable=True)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    code: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    type: Mapped[CouponType] = mapped_column(SQLAlchemyEnum(CouponType), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    max_uses: Mapped[int | None] = mapped_column(Integer, default=None)
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    valid_from: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
     used_by_users = relationship("User", secondary="coupon_users")
 
     @validator('code', pre=True, always=True)
@@ -59,29 +59,29 @@ class Coupon(Base):
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user = Column(String(36), ForeignKey("users.id"), nullable=False)
-    plan = Column(String(255), nullable=False)
-    plan_duration = Column(Integer, nullable=True)
-    coupon = Column(String(36), ForeignKey("coupons.id"), nullable=True)
-    amount = Column(Float, nullable=False)
-    discount_amount = Column(Float, default=0.0)
-    final_amount = Column(Float, nullable=False)
-    payment_id = Column(String(255), nullable=True)
-    status = Column(SQLAlchemyEnum(PaymentStatus), nullable=False, default=PaymentStatus.PENDING)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    plan: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coupon: Mapped[str | None] = mapped_column(String(36), ForeignKey("coupons.id"), nullable=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    discount_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    final_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[PaymentStatus] = mapped_column(SQLAlchemyEnum(PaymentStatus), nullable=False, default=PaymentStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
-    id = Column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
-    user = Column(String(36), ForeignKey("users.id"), nullable=False)
-    order = Column(String(36), ForeignKey("orders.id"), nullable=False)
-    start_date = Column(DateTime, nullable=False)
-    end_date = Column(DateTime, nullable=False)
-    status = Column(SQLAlchemyEnum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.PENDING)
-    auto_renew = Column(Boolean, default=False)
-    cancelled_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    order: Mapped[str] = mapped_column(String(36), ForeignKey("orders.id"), nullable=False)
+    start_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    end_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[SubscriptionStatus] = mapped_column(SQLAlchemyEnum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.PENDING)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)

@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Request, Depends, File, UploadFile
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Request, Depends, File, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from .schema import PatientCreateSchema, PatientUpdateSchema
 from .model import Patient, PatientXray, Gender
 from db.db import get_db
@@ -9,6 +9,7 @@ from utils.auth import get_current_user, verify_token
 from sqlalchemy import insert, select, update, delete
 import os
 from predict.model import Prediction, Label
+from sqlalchemy.exc import SQLAlchemyError
 
 
 patient_router = APIRouter()
@@ -32,7 +33,7 @@ patient_router = APIRouter()
         500: {"description": "Internal server error"}
     }
 )
-async def search_patients(request: Request, query: str, db: Session = Depends(get_db)):
+async def search_patients(request: Request, query: str, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
@@ -59,7 +60,8 @@ async def search_patients(request: Request, query: str, db: Session = Depends(ge
                 *search_conditions  # Unpack all search conditions
             )
         )
-        patients = db.execute(stmt).scalars().all()
+        result = await db.execute(stmt)
+        patients = result.scalars().all()
 
         return JSONResponse(
             status_code=200, 
@@ -71,7 +73,6 @@ async def search_patients(request: Request, query: str, db: Session = Depends(ge
                         "last_name": p.last_name,
                         "phone": p.phone,
                         "age": p.age,
-                        "date_of_birth": p.date_of_birth.isoformat(),
                         "gender": p.gender.value
                     } 
                     for p in patients
@@ -94,14 +95,17 @@ async def search_patients(request: Request, query: str, db: Session = Depends(ge
         500: {"description": "Internal server error"}
     }
 )
-async def validate_patient(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def validate_patient(request: Request, patient_id: str, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
-        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        stmt = select(Patient).where(Patient.id == patient_id)
+        result = await db.execute(stmt)
+        patient = result.scalar_one_or_none()
+        
         if not patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
         
@@ -120,14 +124,13 @@ async def validate_patient(request: Request, patient_id: str, db: Session = Depe
     status_code=201,
     summary="Create a new patient",
     description="""
-    Create a new patient record with first name, last name, phone, age, date of birth and gender
+    Create a new patient record with first name, last name, phone, age and gender
     
     Required fields:
     - first_name: Patient's first name
     - last_name: Patient's last name 
     - phone: Valid phone number
     - age: Patient's age
-    - date_of_birth: Date of birth in ISO format
     - gender: One of ["male", "female", "other"]
     
     Required headers:
@@ -140,25 +143,30 @@ async def validate_patient(request: Request, patient_id: str, db: Session = Depe
         500: {"description": "Internal server error"}
     }
 )
-async def create_patient(request: Request, patient: PatientCreateSchema, db: Session = Depends(get_db)):
+async def create_patient(request: Request, patient: PatientCreateSchema, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
-        if not all([patient.first_name, patient.last_name, patient.phone, patient.age, patient.date_of_birth, patient.gender]):
+        if not all([patient.first_name, patient.last_name, patient.phone, patient.age, patient.gender]):
             return JSONResponse(status_code=400, content={"error": "All fields are required"})
         
         # Check if patient already exists
-        existing_patient = db.query(Patient).filter(Patient.phone == patient.phone).first()
+        stmt = select(Patient).where(Patient.phone == patient.phone)
+        result = await db.execute(stmt)
+        existing_patient = result.scalar_one_or_none()
+        
         if existing_patient:
             return JSONResponse(status_code=400, content={"error": "Patient already exists with this phone number"})
         
         stmt = insert(Patient).values(doctor_id=current_user, **patient.model_dump())
-        result = db.execute(stmt)
-        db.commit()
+        result = await db.execute(stmt)
+        await db.commit()
 
         # Get the newly created patient
-        new_patient = db.query(Patient).filter(Patient.id == result.inserted_primary_key[0]).first()
+        stmt = select(Patient).where(Patient.id == result.inserted_primary_key[0])
+        result = await db.execute(stmt)
+        new_patient = result.scalar_one()
       
         return JSONResponse(status_code=201, content={"message": "Patient created successfully", "patient": {
             "id": new_patient.id,
@@ -166,11 +174,13 @@ async def create_patient(request: Request, patient: PatientCreateSchema, db: Ses
             "last_name": new_patient.last_name,
             "phone": new_patient.phone,
             "age": new_patient.age,
-            "date_of_birth": new_patient.date_of_birth.isoformat(),
             "gender": new_patient.gender.value,
             "created_at": new_patient.created_at.isoformat(),
             "updated_at": new_patient.updated_at.isoformat()
         }})
+    except SQLAlchemyError as e:
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -190,14 +200,16 @@ async def create_patient(request: Request, patient: PatientCreateSchema, db: Ses
         500: {"description": "Internal server error"}
     }
 )
-async def get_all_patients(request: Request, db: Session = Depends(get_db)):
+async def get_all_patients(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
         stmt = select(Patient)
-        patients = db.execute(stmt).scalars().all()
+        result = await db.execute(stmt)
+        patients = result.scalars().all()
+        
         return JSONResponse(status_code=200, content={"patients": [
             {
                 "id": p.id,
@@ -205,7 +217,6 @@ async def get_all_patients(request: Request, db: Session = Depends(get_db)):
                 "last_name": p.last_name,
                 "phone": p.phone,
                 "age": p.age,
-                "date_of_birth": p.date_of_birth.isoformat(),
                 "gender": p.gender.value,
                 "created_at": p.created_at.isoformat(),
                 "updated_at": p.updated_at.isoformat()
@@ -234,27 +245,32 @@ async def get_all_patients(request: Request, db: Session = Depends(get_db)):
         500: {"description": "Internal server error"}
     }
 )
-async def get_patient(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def get_patient(request: Request, patient_id: str, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
-        user = db.query(User).filter(User.id == current_user).first()
+        stmt = select(User).where(User.id == current_user)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
         if not user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
         stmt = select(Patient).where(Patient.id == patient_id)
-        patient = db.execute(stmt).scalar_one_or_none()
+        result = await db.execute(stmt)
+        patient = result.scalar_one_or_none()
+        
         if not patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
+            
         return JSONResponse(status_code=200, content={"patient": {
             "id": patient.id,
             "first_name": patient.first_name,
             "last_name": patient.last_name,
             "phone": patient.phone,
             "age": patient.age,
-            "date_of_birth": patient.date_of_birth.isoformat(),
             "gender": patient.gender.value,
             "created_at": patient.created_at.isoformat(),
             "updated_at": patient.updated_at.isoformat()
@@ -281,7 +297,7 @@ async def get_patient(request: Request, patient_id: str, db: Session = Depends(g
         500: {"description": "Internal server error"}
     }
 )
-async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db)):
+async def get_patient_by_doctor(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         decoded_user = verify_token(request)
 
@@ -290,12 +306,16 @@ async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db))
         
         user_id = decoded_user['user_id']
 
-        user = db.query(User).filter(User.id == user_id).first()
+        stmt = select(User).where(User.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
         if not user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
         stmt = select(Patient).where(Patient.doctor_id == user_id).order_by(Patient.created_at.desc())
-        patients = db.execute(stmt).scalars().all()
+        result = await db.execute(stmt)
+        patients = result.scalars().all()
         
         if not patients:
             return JSONResponse(status_code=200, content={"patients": []})
@@ -307,7 +327,6 @@ async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db))
                 "last_name": p.last_name,
                 "phone": p.phone,
                 "age": p.age,
-                "date_of_birth": p.date_of_birth.isoformat(),
                 "gender": p.gender.value,
                 "created_at": p.created_at.isoformat(),
                 "updated_at": p.updated_at.isoformat()
@@ -328,7 +347,6 @@ async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db))
     - last_name: Patient's last name
     - phone: Valid phone number
     - age: Patient's age  
-    - date_of_birth: Date of birth in ISO format
     - gender: One of ["male", "female", "other"]
     
     Required parameters:
@@ -344,7 +362,7 @@ async def get_patient_by_doctor(request: Request, db: Session = Depends(get_db))
         500: {"description": "Internal server error"}
     }
 )
-async def update_patient(request: Request, patient_id: str, patient: PatientUpdateSchema, db: Session = Depends(get_db)):
+async def update_patient(request: Request, patient_id: str, patient: PatientUpdateSchema, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
@@ -352,15 +370,20 @@ async def update_patient(request: Request, patient_id: str, patient: PatientUpda
         
         # Check if patient exists
         stmt = select(Patient).where(Patient.id == patient_id)
-        existing_patient = db.execute(stmt).scalar_one_or_none()
+        result = await db.execute(stmt)
+        existing_patient = result.scalar_one_or_none()
+        
         if not existing_patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
         
         # partial update
         stmt = update(Patient).where(Patient.id == patient_id).values(**patient.model_dump(exclude_unset=True))
-        db.execute(stmt)
-        db.commit()
+        await db.execute(stmt)
+        await db.commit()
         return JSONResponse(status_code=200, content={"message": "Patient updated successfully"})
+    except SQLAlchemyError as e:
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"message": "Error updating patient", "error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": "Error updating patient", "error": str(e)})
 
@@ -384,7 +407,7 @@ async def update_patient(request: Request, patient_id: str, patient: PatientUpda
         500: {"description": "Internal server error"}
     }
 )
-async def delete_patient(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def delete_patient(request: Request, patient_id: str, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
@@ -392,7 +415,9 @@ async def delete_patient(request: Request, patient_id: str, db: Session = Depend
         
         # Check if patient exists and get patient record
         stmt = select(Patient).where(Patient.id == patient_id)
-        existing_patient = db.execute(stmt).scalar_one_or_none()
+        result = await db.execute(stmt)
+        existing_patient = result.scalar_one_or_none()
+        
         if not existing_patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
             
@@ -400,31 +425,33 @@ async def delete_patient(request: Request, patient_id: str, db: Session = Depend
         try:
             # Delete all x-rays for this patient
             x_ray_stmt = delete(PatientXray).where(PatientXray.patient == patient_id)
-            db.execute(x_ray_stmt)
+            await db.execute(x_ray_stmt)
 
             # Get and delete all labels for patient's predictions
-            predictions = db.query(Prediction).filter(Prediction.patient == patient_id).all()
+            pred_stmt = select(Prediction).where(Prediction.patient == patient_id)
+            result = await db.execute(pred_stmt)
+            predictions = result.scalars().all()
+            
             for prediction in predictions:
                 label_stmt = delete(Label).where(Label.prediction_id == prediction.id)
-                db.execute(label_stmt)
+                await db.execute(label_stmt)
 
             # Delete all predictions
             pred_stmt = delete(Prediction).where(Prediction.patient == patient_id)
-            db.execute(pred_stmt)
+            await db.execute(pred_stmt)
             
             # Finally delete the patient
             patient_stmt = delete(Patient).where(Patient.id == patient_id)
-            db.execute(patient_stmt)
+            await db.execute(patient_stmt)
             
-            db.commit()
+            await db.commit()
             return JSONResponse(status_code=200, content={"message": "Patient deleted successfully"})
             
-        except Exception as e:
-            db.rollback()
+        except SQLAlchemyError as e:
+            await db.rollback()
             raise e
             
     except Exception as e:
-        db.rollback()
         return JSONResponse(status_code=500, content={"message": "Error deleting patient", "error": str(e)})
     
 
@@ -455,18 +482,24 @@ async def upload_xray(
     request: Request, 
     patient_id: str,
     file: UploadFile = File(...), 
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
-        user = db.query(User).filter(User.id == current_user).first()
+        stmt = select(User).where(User.id == current_user)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        stmt = select(Patient).where(Patient.id == patient_id)
+        result = await db.execute(stmt)
+        patient = result.scalar_one_or_none()
+        
         if not patient:
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
 
@@ -479,9 +512,12 @@ async def upload_xray(
         
         xray = PatientXray(patient=patient.id, original_image=file_path)
         db.add(xray)
-        db.commit()
+        await db.commit()
         
         return JSONResponse(status_code=200, content={"message": "X-ray uploaded successfully"})
+    except SQLAlchemyError as e:
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
@@ -502,14 +538,15 @@ async def upload_xray(
         500: {"description": "Internal server error"}
     }
 )
-async def get_xray(request: Request, patient_id: str, db: Session = Depends(get_db)):
+async def get_xray(request: Request, patient_id: str, db: AsyncSession = Depends(get_db)):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Invalid token"})
         
         stmt = select(PatientXray).where(PatientXray.patient == patient_id).order_by(PatientXray.created_at.desc())
-        xrays = db.execute(stmt).scalars().all()
+        result = await db.execute(stmt)
+        xrays = result.scalars().all()
 
         return JSONResponse(status_code=200, content={"xrays": [
             {

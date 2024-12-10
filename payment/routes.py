@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from .models import *
 from .schema import *
 from db.db import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from utils.auth import get_current_user
 import razorpay
 from decouple import config
@@ -12,7 +12,7 @@ import time
 import hmac
 import hashlib
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 
 client = razorpay.Client(auth=(config("RAZORPAY_KEY_ID"), config("RAZORPAY_KEY_SECRET")))
@@ -39,9 +39,10 @@ plans = [
         500: {"description": "Server error while fetching coupons"}
     }
 )
-async def get_all_coupons(db: Session = Depends(get_db)):
+async def get_all_coupons(db: AsyncSession = Depends(get_db)):
     try:
-        coupons = db.query(Coupon).all()
+        result = await db.execute(select(Coupon))
+        coupons = result.scalars().all()
         return JSONResponse(status_code=200, content={"coupons": [{
             "id": coupon.id,
             "code": coupon.code,
@@ -67,13 +68,23 @@ async def get_all_coupons(db: Session = Depends(get_db)):
 )
 async def get_coupon_details(
     coupon_id: str = Path(..., description="Unique identifier of the coupon"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
-        coupon = db.query(Coupon).filter(Coupon.id == coupon_id).first()
+        result = await db.execute(select(Coupon).filter(Coupon.id == coupon_id))
+        coupon = result.scalar_one_or_none()
         if not coupon:
             return JSONResponse(status_code=404, content={"error": "Coupon not found"})
-        return JSONResponse(status_code=200, content={"coupon": coupon.to_dict()})
+        return JSONResponse(status_code=200, content={"coupon": {
+            "id": coupon.id,
+            "code": coupon.code,
+            "type": str(coupon.type),
+            "value": coupon.value,
+            "max_uses": coupon.max_uses,
+            "valid_from": coupon.valid_from.isoformat() if coupon.valid_from else None,
+            "valid_until": coupon.valid_until.isoformat() if coupon.valid_until else None,
+            "is_active": coupon.is_active
+        }})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
@@ -90,14 +101,15 @@ async def get_coupon_details(
 async def create_coupon(
     request: Request,
     coupon: CouponSchema = Body(..., description="Coupon details including code, discount value and validity"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
             
-        user = db.query(User).filter(User.id == current_user).first()
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
         if not user or str(user.user_type) != "admin":
             return JSONResponse(status_code=401, content={"error": "Admin access required"})
             
@@ -111,7 +123,7 @@ async def create_coupon(
             is_active=coupon.is_active
         )
         db.add(new_coupon)
-        db.commit()
+        await db.commit()
         return JSONResponse(status_code=200, content={"message": "Coupon created successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -131,18 +143,20 @@ async def update_coupon(
     request: Request,
     coupon_id: str = Path(..., description="Unique identifier of coupon to update"),
     coupon: CouponSchema = Body(..., description="Updated coupon details"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
             
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or user.role != "admin":
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
+        if not user or user.user_type != "admin":
             return JSONResponse(status_code=401, content={"error": "Admin access required"})
         
-        coupon_details = db.query(Coupon).filter(Coupon.id == coupon_id).first()
+        result = await db.execute(select(Coupon).filter(Coupon.id == coupon_id))
+        coupon_details = result.scalar_one_or_none()
         if not coupon_details:
             return JSONResponse(status_code=404, content={"error": "Coupon not found"})
         
@@ -161,7 +175,7 @@ async def update_coupon(
         if coupon.is_active is not None:
             coupon_details.is_active = coupon.is_active
 
-        db.commit()
+        await db.commit()
         return JSONResponse(status_code=200, content={"message": "Coupon updated successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -180,137 +194,25 @@ async def update_coupon(
 async def delete_coupon(
     request: Request,
     coupon_id: str = Path(..., description="Unique identifier of coupon to delete"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
             
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or user.role != "admin":
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
+        if not user or user.user_type != "admin":
             return JSONResponse(status_code=401, content={"error": "Admin access required"})
         
-        coupon_details = db.query(Coupon).filter(Coupon.id == coupon_id).first()
-        if not coupon_details:
-            return JSONResponse(status_code=404, content={"error": "Coupon not found"})
-        
-        db.delete(coupon_details)
-        db.commit()
-        return JSONResponse(status_code=200, content={"message": "Coupon deleted successfully"})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    
-@payment_router.get("/orders/get-all-orders",
-    summary="Get all orders",
-    description="Retrieves list of all subscription orders. Admin only.",
-    response_description="Returns list of order objects with payment details",
-    responses={
-        200: {"description": "Successfully retrieved orders list"},
-        401: {"description": "Unauthorized - Admin access required"},
-        500: {"description": "Server error while fetching orders"}
-    }
-)
-async def get_all_orders(request: Request, db: Session = Depends(get_db)):
-    try:
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-            
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or user.role != "admin":
-            return JSONResponse(status_code=401, content={"error": "Admin access required"})
-            
-        orders = db.query(Order).all()
-        return JSONResponse(status_code=200, content={"orders": [order.to_dict() for order in orders]})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    
-@payment_router.get("/orders/get-orders-of-user",
-    summary="Get user orders",
-    description="Retrieves all subscription orders of the authenticated user",
-    response_description="Returns list of user's order objects with payment details",
-    responses={
-        200: {"description": "Successfully retrieved user orders"},
-        401: {"description": "Unauthorized access"},
-        500: {"description": "Server error while fetching orders"}
-    }
-)
-async def get_orders_of_user(request: Request, db: Session = Depends(get_db)):
-    try:
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-
-        orders = db.query(Order).filter(Order.user_id == current_user).all()
-        return JSONResponse(status_code=200, content={"orders": [order.to_dict() for order in orders]})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    
-@payment_router.get("/orders/get-order-details/{order_id}",
-    summary="Get order details",
-    description="Retrieves detailed information about a specific order",
-    response_description="Returns complete details of the requested order",
-    responses={
-        200: {"description": "Successfully retrieved order details"},
-        404: {"description": "Order not found"},
-        500: {"description": "Server error while fetching order"}
-    }
-)
-async def get_order_details(
-    request: Request,
-    order_id: str = Path(..., description="Unique identifier of the order"),
-    db: Session = Depends(get_db)
-):
-    try:
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-            
-        order = db.query(Order).filter(Order.id == order_id).first()
-        if not order:
-            return JSONResponse(status_code=404, content={"error": "Order not found"})
-            
-        # Only allow admin or order owner to view details
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or (user.role != "admin" and str(order.user_id) != current_user):
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-            
-        return JSONResponse(status_code=200, content={"order": order.to_dict()})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@payment_router.delete("/orders/delete-order/{order_id}",
-    summary="Delete order",
-    description="Permanently deletes an order record. Admin only.",
-    response_description="Returns confirmation of order deletion",
-    responses={
-        200: {"description": "Order deleted successfully"},
-        401: {"description": "Unauthorized - Admin access required"},
-        404: {"description": "Order not found"},
-        500: {"description": "Server error while deleting order"}
-    }
-)
-async def delete_order(
-    request: Request,
-    order_id: str = Path(..., description="Unique identifier of order to delete"),
-    db: Session = Depends(get_db)
-):
-    try:
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-            
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or user.role != "admin":
-            return JSONResponse(status_code=401, content={"error": "Admin access required"})
-        
-        order_details = db.query(Order).filter(Order.id == order_id).first()
+        result = await db.execute(select(Coupon).filter(Coupon.id == coupon_id))
+        order_details = result.scalar_one_or_none()
         if not order_details:
             return JSONResponse(status_code=404, content={"error": "Order not found"})
         
-        db.delete(order_details)
-        db.commit()
+        await db.delete(order_details)
+        await db.commit()
         return JSONResponse(status_code=200, content={"message": "Order deleted successfully"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -331,7 +233,7 @@ async def delete_order(
 async def subscribe(
     request: Request,
     payment: PaymentCreateSchema = Body(..., description="Payment details including plan ID and optional coupon"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
@@ -339,15 +241,19 @@ async def subscribe(
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == current_user).first()
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
         # Check if user has active subscription
-        active_subscription = db.query(Subscription).filter(
-            Subscription.user == str(user.id),
-            Subscription.status == SubscriptionStatus.ACTIVE
-        ).first()
+        result = await db.execute(
+            select(Subscription).filter(
+                Subscription.user == str(user.id),
+                Subscription.status == SubscriptionStatus.ACTIVE
+            )
+        )
+        active_subscription = result.scalar_one_or_none()
 
         plan = next((p for p in plans if p["name"].lower() == payment.plan.lower()), None)
         if not plan:
@@ -365,20 +271,27 @@ async def subscribe(
         
         coupon = None
         if payment.coupon:
-            coupon = db.query(Coupon).filter(
-                Coupon.code == payment.coupon,
-                Coupon.is_active == True,
-                Coupon.valid_until > datetime.now()
-            ).first()
+            # Check if coupon exists and is valid
+            result = await db.execute(
+                select(Coupon).filter(
+                    func.lower(Coupon.code) == payment.coupon.lower(),
+                    Coupon.is_active == True,
+                    Coupon.valid_until > datetime.now()
+                )
+            )
+            coupon = result.scalar_one_or_none()
             
             if not coupon:
                 return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
                 
             # Check if user has already used this coupon
-            coupon_usage = db.query(CouponUsers).filter(
-                CouponUsers.coupon_id == coupon.id,
-                CouponUsers.user_id == str(user.id)
-            ).first()
+            result = await db.execute(
+                select(CouponUsers).filter(
+                    CouponUsers.coupon_id == coupon.id,
+                    CouponUsers.user_id == str(user.id)
+                )
+            )
+            coupon_usage = result.scalar_one_or_none()
             
             if coupon_usage:
                 return JSONResponse(status_code=400, content={"error": "Coupon already used"})
@@ -392,19 +305,7 @@ async def subscribe(
                 discount_amount = int(amount * coupon.value / 100)
             else:
                 discount_amount = int(coupon.value)
-                if discount_amount > amount:
-                    discount_amount = amount
-                    
-            # Record coupon usage
-            coupon_user = CouponUsers(
-                coupon_id=coupon.id,
-                user_id=str(user.id)
-            )
-            db.add(coupon_user)
-            
-            # Update coupon used count
-            coupon.used_count += 1
-            db.add(coupon)
+
         else:
             discount_amount = 0
 
@@ -419,11 +320,11 @@ async def subscribe(
         
         if discount_amount > 0:
             subscription_data['addons'] = [{
-                'item': {
-                    "name": f"Discount for {plan['name']}",
-                    "amount": -discount_amount,
-                    "currency": "INR",
-                }
+                # 'item': {
+                #     "name": f"Discount for {plan['name']}",
+                #     "amount": -round(discount_amount),
+                #     "currency": "INR",
+                # }
             }]
 
         subscription = client.subscription.create(data=subscription_data)
@@ -432,7 +333,7 @@ async def subscribe(
         if active_subscription:
             active_subscription.status = SubscriptionStatus.CANCELLED
             db.add(active_subscription)
-            db.commit()
+            await db.commit()
 
         order = Order(
             user=current_user,
@@ -446,7 +347,7 @@ async def subscribe(
         )
 
         db.add(order)
-        db.commit()
+        await db.commit()
         
         return JSONResponse(status_code=200, content={
             "message": "Payment created successfully",
@@ -469,10 +370,11 @@ async def subscribe(
 )
 async def verify_payment(
     payment: PaymentVerifySchema = Body(..., description="Payment verification details including signature"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
-        order = db.query(Order).filter(Order.payment_id == payment.razorpay_subscription_id).first()
+        result = await db.execute(select(Order).filter(Order.payment_id == payment.razorpay_subscription_id))
+        order = result.scalar_one_or_none()
         if not order:
             return JSONResponse(status_code=404, content={"error": "Order not found"})
         
@@ -486,22 +388,26 @@ async def verify_payment(
 
         if generated_signature != payment.razorpay_signature:
             order.status = PaymentStatus.FAILED
-            db.commit()
+            await db.commit()
             return JSONResponse(status_code=400, content={"error": "Invalid signature"})
         
         subscription = client.subscription.fetch(payment.razorpay_subscription_id)
         
-        user = db.query(User).filter(User.id == order.user).first()
+        result = await db.execute(select(User).filter(User.id == order.user))
+        user = result.scalar_one_or_none()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
         duration_days = 365 if subscription["quantity"] == 12 else 30
         
         # Cancel any existing active subscriptions
-        active_subscriptions = db.query(Subscription).filter(
-            Subscription.user == str(user.id),
-            Subscription.status == SubscriptionStatus.ACTIVE
-        ).all()
+        result = await db.execute(
+            select(Subscription).filter(
+                Subscription.user == str(user.id),
+                Subscription.status == SubscriptionStatus.ACTIVE
+            )
+        )
+        active_subscriptions = result.scalars().all()
         
         for sub in active_subscriptions:
             sub.status = SubscriptionStatus.CANCELLED
@@ -516,11 +422,27 @@ async def verify_payment(
         )
 
         db.add(user_subscription)
-        db.commit()
+        await db.commit()
 
         order.status = PaymentStatus.PAID
         db.add(order)
-        db.commit()
+        
+        # Add coupon usage after successful payment if coupon was used
+        if order.coupon:
+            coupon_user = CouponUsers(
+                coupon_id=order.coupon,
+                user_id=str(user.id)
+            )
+            db.add(coupon_user)
+            
+            # Update coupon used count
+            result = await db.execute(select(Coupon).filter(Coupon.id == order.coupon))
+            coupon = result.scalar_one_or_none()
+            if coupon:
+                coupon.used_count += 1
+                db.add(coupon)
+        
+        await db.commit()
 
         if order.plan == "doctor":
             user.account_type = "doctor"
@@ -532,7 +454,7 @@ async def verify_payment(
         user.last_credit_updated_at = datetime.now()
         user.credit_expiry = user_subscription.end_date
         db.add(user)
-        db.commit()
+        await db.commit()
 
         return JSONResponse(status_code=200, content={"message": "Payment verified successfully"})
     except Exception as e:
@@ -553,7 +475,7 @@ async def verify_payment(
 async def cancel_subscription(
     request: Request,
     subscription_id: str = Query(..., description="Unique identifier of subscription to cancel"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
@@ -567,36 +489,40 @@ async def cancel_subscription(
             return JSONResponse(status_code=400, content={"message": "Subscription is already cancelled"})
             
         subscription = client.subscription.cancel(subscription_id)
-        order = db.query(Order).filter(Order.payment_id == subscription_id).first()
+        result = await db.execute(select(Order).filter(Order.payment_id == subscription_id))
+        order = result.scalar_one_or_none()
 
         if not order:
             return JSONResponse(status_code=404, content={"error": "Order not found"})
             
         # Verify user owns the subscription or is admin
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user or (user.role != "admin" and str(order.user_id) != current_user):
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
+        if not user or (user.user_type != "admin" and str(order.user_id) != current_user):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
         
-        user_subscription = db.query(Subscription).filter(Subscription.order_id == order.id).first()
+        result = await db.execute(select(Subscription).filter(Subscription.order_id == order.id))
+        user_subscription = result.scalar_one_or_none()
         if not user_subscription:
             return JSONResponse(status_code=404, content={"error": "User subscription not found"})
         
         user_subscription.status = SubscriptionStatus.CANCELLED
         db.add(user_subscription)
-        db.commit()
+        await db.commit()
 
         order.status = PaymentStatus.CANCELLED
         db.add(order)
-        db.commit()
+        await db.commit()
         
         # Reset user account type and credits if subscription cancelled
-        subscription_user = db.query(User).filter(User.id == order.user_id).first()
+        result = await db.execute(select(User).filter(User.id == order.user_id))
+        subscription_user = result.scalar_one_or_none()
         if subscription_user:
             subscription_user.account_type = "free"
             subscription_user.credits = 0
             subscription_user.credit_expiry = None
             db.add(subscription_user)
-            db.commit()
+            await db.commit()
             
         return JSONResponse(status_code=200, content={"message": "Subscription cancelled successfully"})
     except Exception as e:
@@ -615,7 +541,7 @@ async def cancel_subscription(
 )
 async def fetch_plan_details(
     plan_name: str = Query(..., description="Name of the plan to fetch details for"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         plan = next((p for p in plans if p["name"].lower() == plan_name.lower()), None)
@@ -631,7 +557,6 @@ async def fetch_plan_details(
         return JSONResponse(status_code=200, content={"amount": amount })
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 @payment_router.get("/apply-coupon",
     summary="Apply coupon",
     description="Applies a discount coupon to the payment",
@@ -645,18 +570,17 @@ async def fetch_plan_details(
 async def apply_coupon(
     plan_name: str = Query(..., description="Name of the plan to apply coupon to"),
     coupon_code: str = Query(..., description="Coupon code to apply"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         # Validate and fetch coupon - case insensitive search
-        coupon = (
-            db.query(Coupon)
-            .filter(
+        result = await db.execute(
+            select(Coupon).filter(
                 func.lower(Coupon.code) == coupon_code.lower(),  # Case insensitive comparison
                 Coupon.is_active.is_(True),
             )
-            .first()
         )
+        coupon = result.scalar_one_or_none()
         
         if not coupon:
             return JSONResponse(
@@ -721,18 +645,20 @@ async def apply_coupon(
 async def upgrade_subscription(
     request: Request,
     payment: PaymentCreateSchema = Body(..., description="Payment details including optional coupon"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         current_user = get_current_user(request)
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
         
-        user = db.query(User).filter(User.id == current_user).first()
+        result = await db.execute(select(User).filter(User.id == current_user))
+        user = result.scalar_one_or_none()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        user_subscription = db.query(Subscription).filter(Subscription.user == current_user).first()
+        result = await db.execute(select(Subscription).filter(Subscription.user == current_user))
+        user_subscription = result.scalar_one_or_none()
         if not user_subscription:
             return JSONResponse(status_code=404, content={"error": "Subscription not found"})
         
@@ -757,11 +683,14 @@ async def upgrade_subscription(
         # Handle coupon if provided
         coupon = None
         if payment.coupon:
-            coupon = db.query(Coupon).filter(
-                Coupon.code == payment.coupon,
-                Coupon.is_active == True,
-                Coupon.valid_until > datetime.now()
-            ).first()
+            result = await db.execute(
+                select(Coupon).filter(
+                    func.lower(Coupon.code) == payment.coupon.lower(),
+                    Coupon.is_active == True,
+                    Coupon.valid_until > datetime.now()
+                )
+            )
+            coupon = result.scalar_one_or_none()
             if not coupon:
                 return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
 
@@ -794,7 +723,7 @@ async def upgrade_subscription(
             subscription_data['addons'] = [{
                 'item': {
                     "name": f"Discount for {upgrade_plan['name']}",
-                    "amount": -discount_amount,
+                    "amount": -int(discount_amount),
                     "currency": "INR",
                 }
             }]
@@ -814,7 +743,7 @@ async def upgrade_subscription(
         )
 
         db.add(order)
-        db.commit()
+        await db.commit()
 
         return JSONResponse(status_code=200, content={
             "message": "Upgrade payment created successfully",

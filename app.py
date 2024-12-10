@@ -1,17 +1,14 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from db.db import Base, engine
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
-import os
 from auth.routes import user_router
 from patients.routes import patient_router
 from payment.routes import payment_router
 from predict.routes import prediction_router
 from contact.routes import contact_router
-
-Base.metadata.create_all(bind=engine)
+from admin.config import create_admin
 
 
 middleware = [
@@ -31,6 +28,7 @@ app = FastAPI(
     license_info={"name": "Backupdoc", "url": "https://backupdoc.ai"}
 )
 
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="profile_pictures")
 
 @app.get("/")
@@ -42,3 +40,5 @@ app.include_router(patient_router, prefix="/patient", tags=["patient"])
 app.include_router(prediction_router, prefix="/predict", tags=["predict"])
 app.include_router(payment_router, tags=["payment"])
 app.include_router(contact_router, tags=["contact"])
+
+admin = create_admin(app)

@@ -1,5 +1,6 @@
 from db.db import Base
-from sqlalchemy import Column, String, Text, DateTime
+from sqlalchemy import String, Text, DateTime
+from sqlalchemy.orm import Mapped, mapped_column
 import uuid
 from datetime import datetime
 
@@ -8,13 +9,13 @@ def generate_uuid():
 
 class ContactUs(Base):
     __tablename__ = "contact_us"
-    id = Column(String(36), nullable=True, unique=True, default=generate_uuid, primary_key=True)
-    first_name = Column(String(255), nullable=False)
-    last_name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=False)
-    topic = Column(String(255), nullable=False)
-    company_name = Column(String(255), nullable=False)
-    company_size = Column(String(255), nullable=False)
-    query = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
     
+    id: Mapped[str] = mapped_column(String(36), nullable=True, unique=True, default=generate_uuid, primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_size: Mapped[str] = mapped_column(String(255), nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

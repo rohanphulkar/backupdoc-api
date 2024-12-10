@@ -1,6 +1,7 @@
 bcrypt==4.2.1
 cryptography==43.0.3
 fastapi==0.115.5
+fastadmin==0.2.16
 gauthuserinfo==1.0.0
 google-ai-generativelanguage==0.6.10
 google-api-core==2.23.0
