@@ -41,7 +41,9 @@ async def init_models():
         await conn.run_sync(Base.metadata.create_all)
 
 # Run the initialization
-asyncio.create_task(init_models())
+loop = asyncio.get_event_loop()
+loop.run_until_complete(init_models())
+loop.close()
 
 async def get_db():
     async with SessionLocal() as session:
