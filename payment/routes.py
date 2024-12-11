@@ -29,6 +29,7 @@ plans = [
         "plan_id": config("PREMIUM_PLAN_ID"),
     }
 ]
+
     
 @payment_router.get("/coupon/get-all-coupons",
     summary="Get all coupons", 
@@ -409,6 +410,7 @@ async def verify_payment(
         user_subscription = Subscription(
             user=str(user.id),
             order=str(order.id),
+            subscription_id=subscription["id"],
             start_date=datetime.now(),
             end_date=datetime.now() + timedelta(days=duration_days),
             status=SubscriptionStatus.ACTIVE
@@ -475,6 +477,8 @@ async def cancel_subscription(
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
         
         subscription = client.subscription.fetch(subscription_id)
+
+        print(subscription)
         if subscription["status"] not in ["active", "authenticated"]:
             return JSONResponse(status_code=400, content={"message": "Subscription is not active"})
         if subscription["status"] == "cancelled":

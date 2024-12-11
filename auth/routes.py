@@ -133,7 +133,7 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
                 "bio": user.bio,
                 "credits": user.credits,
                 "account_type": user.account_type,
-                "subscription_id": subscription.id,
+                "subscription_id": subscription.subscription_id,
             }
         else:
             user_data = {

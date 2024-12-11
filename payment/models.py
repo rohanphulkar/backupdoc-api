@@ -89,6 +89,7 @@ class Subscription(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
     user: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     order: Mapped[str] = mapped_column(String(36), ForeignKey("orders.id"), nullable=False)
+    subscription_id: Mapped[str] = mapped_column(String(255), nullable=False)
     start_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     end_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     status: Mapped[SubscriptionStatus] = mapped_column(SQLAlchemyEnum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.PENDING)
