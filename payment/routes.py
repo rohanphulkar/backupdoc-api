@@ -474,7 +474,9 @@ async def cancel_subscription(
         if not current_user:
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
         
-        subscription = client.subscription.fetch(subscription_id)
+        subscription = client.subscription.fetch(subscription_id, {
+            'cancel_at_cycle_end': 0
+        })
         if subscription["status"] not in ["active", "authenticated"]:
             return JSONResponse(status_code=400, content={"message": "Subscription is not active"})
         if subscription["status"] == "cancelled":
