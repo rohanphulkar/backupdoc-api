@@ -12,6 +12,7 @@ from utils.auth import (
 from utils.email import send_forgot_password_email
 from gauthuserinfo import get_user_info
 from sqlalchemy import select
+from payment.models import Subscription
 
 user_router = APIRouter()
 
@@ -123,13 +124,26 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
         user = db.query(User).filter(User.id == decoded_token["user_id"]).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
-        user_data = {
-            "name": user.name,
-            "email": user.email,
-            "bio": user.bio,
-            "credits": user.credits,
-            "account_type": user.account_type,
-        }
+        
+        subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+        if subscription:
+            user_data = {
+                "name": user.name,
+                "email": user.email,
+                "bio": user.bio,
+                "credits": user.credits,
+                "account_type": user.account_type,
+                "subscription_id": subscription.id,
+            }
+        else:
+            user_data = {
+                "name": user.name,
+                "email": user.email,
+                "bio": user.bio,
+                "credits": user.credits,
+                "account_type": user.account_type,
+                "subscription_id": None,
+            }
 
         if user.profile_url:
             profile_url = f"{request.base_url}{user.profile_url}"
