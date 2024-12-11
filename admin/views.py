@@ -1,7 +1,7 @@
 from auth.model import User
 from patients.model import Patient, PatientXray
 from predict.model import Prediction, Label
-from payment.models import Coupon, Order, Subscription, CouponUsers
+from payment.models import Plan, Coupon, Order, Subscription, CouponUsers
 from contact.model import ContactUs
 from sqladmin import ModelView
 
@@ -55,6 +55,19 @@ class PredictionAdmin(ModelView, model=Prediction):
             ]
         }]
     }
+
+
+class PlanAdmin(ModelView, model=Plan):
+    column_list = ["id", "rzp_plan_id", "amount", "type"]
+    column_sortable_list = ["created_at", "amount", "type"]
+    column_default_sort = ("created_at", True)
+    form_excluded_columns = ["id", "created_at", "updated_at"]
+    can_create = True
+    can_edit = True
+    can_delete = True
+    can_view_details = True
+    name_plural = "Plans"
+    icon = "fa-solid fa-credit-card"
 
 
 class CouponAdmin(ModelView, model=Coupon):

@@ -53,11 +53,19 @@ class AdminAuth(AuthenticationBackend):
 def create_admin(app):
     authentication_backend = AdminAuth(secret_key="supersecretkey")
     admin = Admin(app=app, engine=engine, authentication_backend=authentication_backend)
+    # User management
     admin.add_view(UserAdmin)
-    admin.add_view(PatientAdmin) 
+    
+    # Patient related
+    admin.add_view(PatientAdmin)
     admin.add_view(PredictionAdmin)
+    
+    # Payment and billing
+    admin.add_view(PlanAdmin)
     admin.add_view(CouponAdmin)
     admin.add_view(OrderAdmin)
     admin.add_view(SubscriptionAdmin)
+    
+    # Support
     admin.add_view(ContactAdmin)
     return admin
