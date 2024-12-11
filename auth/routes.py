@@ -125,7 +125,7 @@ async def get_user(request: Request, db: Session = Depends(get_db)):
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
         
-        subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+        subscription = db.query(Subscription).filter(Subscription.user == user.id).first()
         if subscription:
             user_data = {
                 "name": user.name,
