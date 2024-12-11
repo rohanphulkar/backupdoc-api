@@ -212,11 +212,11 @@ def create_dental_radiology_report(patient_name, report_content):
 
 def send_email_with_attachment(to_email, patient_name, pdf_file_path):
     try:
-        # Get email configuration
-        smtp_server = str(config("EMAIL_HOST"))
-        smtp_port = int(config("EMAIL_PORT"))
-        smtp_username = str(config("EMAIL_SENDER"))
-        smtp_password = str(config("EMAIL_PASSWORD"))
+        # Email configuration for Office 365
+        smtp_server = str(config('EMAIL_HOST'))
+        smtp_port = int(config('EMAIL_PORT'))
+        smtp_username = str(config('EMAIL_SENDER'))
+        smtp_password = str(config('EMAIL_PASSWORD'))
 
         # Create message
         msg = MIMEMultipart()
@@ -247,9 +247,11 @@ BackupDoc.AI Team"""
             )
             msg.attach(part)
 
-        # Send email
+        # Send email with SSL/TLS
         with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
+            server.ehlo()  # Identify to the SMTP server
+            server.starttls()  # Enable TLS encryption
+            server.ehlo()  # Re-identify over TLS connection
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
 

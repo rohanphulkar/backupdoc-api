@@ -2,7 +2,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from decouple import config
-
+from sqlalchemy.pool import QueuePool
 # Database connection string
 DB_USER = config('DB_USER', 'rohanphulkar')
 DB_PASSWORD = config('DB_PASSWORD', 'Rohan007')
@@ -16,12 +16,11 @@ SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{D
 # Create sync engine
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_pre_ping=True,
+    poolclass=QueuePool,
     pool_size=5,
     max_overflow=10,
     pool_timeout=30,
     pool_recycle=1800,
-    echo=True  # Enable SQL logging
 )
 
 # Create session factory

@@ -3,10 +3,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from decouple import config
 
-EMAIL_SENDER = config('EMAIL_SENDER')
-EMAIL_PASSWORD = config('EMAIL_PASSWORD')
+EMAIL_SENDER = str(config('EMAIL_SENDER'))
+EMAIL_PASSWORD = str(config('EMAIL_PASSWORD')) 
 EMAIL_HOST = str(config('EMAIL_HOST'))
-EMAIL_PORT = config('EMAIL_PORT')
+EMAIL_PORT = int(config('EMAIL_PORT'))
 
 def send_email(sender_email, sender_password, receiver_email, subject, body):
     try:
@@ -20,8 +20,10 @@ def send_email(sender_email, sender_password, receiver_email, subject, body):
         message.attach(MIMEText(body, 'plain'))
         
         # Create SMTP session for sending the mail
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)  # Use Gmail's SMTP server
-        server.starttls()  # Enable security
+        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
+        server.ehlo()  # Identify yourself to the server
+        server.starttls()  # Enable SSL/TLS security
+        server.ehlo()  # Re-identify yourself over TLS connection
         
         # Login with the sender's email and password
         server.login(sender_email, sender_password)
@@ -37,7 +39,7 @@ def send_email(sender_email, sender_password, receiver_email, subject, body):
     except Exception as e:
         print(f"Failed to send email: {e}")
 
-# Replace these with appropriate values
+# Use the configured email credentials
 sender_email = EMAIL_SENDER
 sender_password = EMAIL_PASSWORD
 

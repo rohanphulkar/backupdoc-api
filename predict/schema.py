@@ -8,6 +8,7 @@ class LabelResponse(BaseModel):
     name: str
     percentage: float
     prediction_id: str
+    include:bool
     created_at: datetime
     updated_at: datetime
 

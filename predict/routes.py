@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from db.db import get_db
-from .model import Prediction, Label
+from .model import Prediction, Label, DeletedLabel
 from sqlalchemy.orm import Session
 from .schema import PredictionResponse, LabelResponse
 from typing import List
@@ -59,7 +59,7 @@ async def get_predictions(patient_id: str, db: Session = Depends(get_db)):
 @prediction_router.get("/get-prediction/{prediction_id}",
     response_model=dict,
     status_code=200,
-    summary="Get prediction details",
+    summary="Get prediction details", 
     description="""
     Get detailed information about a specific prediction    
     
@@ -94,9 +94,18 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
         
         if not prediction:
             return JSONResponse(status_code=404, content={"error": "Prediction not found"})
-        
-        prediction.original_image = f"{request.base_url}{prediction.original_image}"
-        prediction.predicted_image = f"{request.base_url}{prediction.predicted_image}"
+
+        # Get base URL without trailing slash
+        base_url = str(request.base_url).rstrip('/')
+            
+        # Create relative URLs for images
+        original_image_url = f"{base_url}/{prediction.original_image}"
+        predicted_image_url = f"{base_url}/{prediction.predicted_image}" if prediction.predicted_image else None
+
+        # Create a copy of prediction to avoid modifying the DB object
+        prediction_response = PredictionResponse.from_orm(prediction)
+        prediction_response.original_image = original_image_url
+        prediction_response.predicted_image = predicted_image_url
 
         # Fetch all previous predictions excluding the current one
         previous_predictions = db.query(Prediction).filter(
@@ -104,16 +113,19 @@ async def get_prediction(request: Request, prediction_id: str, db: Session = Dep
             Prediction.id != prediction_id
         ).order_by(Prediction.created_at.desc()).all()
         
-        if previous_predictions:
-            for prev in previous_predictions:
-                prev.original_image = f"{request.base_url}{prev.original_image}"
-                prev.predicted_image = f"{request.base_url}{prev.predicted_image}"
+        # Process previous predictions
+        previous_predictions_response = []
+        for prev in previous_predictions:
+            prev_response = PredictionResponse.from_orm(prev)
+            prev_response.original_image = f"{base_url}/{prev.original_image}"
+            prev_response.predicted_image = f"{base_url}/{prev.predicted_image}" if prev.predicted_image else None
+            previous_predictions_response.append(prev_response)
         
         labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
         
         prediction_data = {
-            "prediction": PredictionResponse.from_orm(prediction),
-            "previous_predictions": [PredictionResponse.from_orm(prev) for prev in previous_predictions],
+            "prediction": prediction_response,
+            "previous_predictions": previous_predictions_response,
             "labels": [LabelResponse.from_orm(label) for label in labels]
         }
         
@@ -206,7 +218,7 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
             annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
             # Save annotated image
-            annotated_image_pil = Image.fromarray(annotated_image)
+            annotated_image_pil = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
             current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
             random_number = random.randint(1000, 9999)
             random_filename = f"{current_datetime}-{random_number}.jpeg"
@@ -238,7 +250,8 @@ async def create_prediction(request: Request, xray_id: str, db: Session = Depend
                 Label(
                     prediction_id=prediction.id,
                     name=class_name,
-                    percentage=percentage
+                    percentage=percentage,
+                    include=True
                 )
                 for class_name, percentage in class_percentages.items()
             ]
@@ -386,7 +399,10 @@ async def make_report(
             return JSONResponse(status_code=404, content={"error": "Patient not found"})
 
         # Get prediction labels and format findings
-        labels = db.query(Label).filter(Label.prediction_id == prediction_id).all()
+        labels = db.query(Label).filter(
+            Label.prediction_id == prediction_id,
+            Label.include == True
+        ).all()
         
         if not labels:
             return JSONResponse(status_code=404, content={"error": "No findings available for this prediction"})
@@ -461,7 +477,7 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
         if prediction.predicted_image and os.path.exists(prediction.predicted_image):
             os.remove(prediction.predicted_image)
 
-        # Mark label as not included instead of deleting
+        # Mark label as not included
         label.include = False
         db.commit()
 
@@ -476,6 +492,7 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
             Label.prediction_id == prediction.id,
             Label.include == True
         ).all()
+
         included_label_names = [label.name for label in included_labels]
 
         # Filter predictions to only included labels and reassign class_ids
@@ -483,6 +500,20 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
             pred for pred in prediction_data["predictions"]
             if pred["class"] in included_label_names
         ]
+
+        # Get removed prediction data
+        removed_predictions = [
+            pred for pred in prediction_data["predictions"]
+            if pred["class"] == label.name
+        ]
+
+        # Save excluded label data
+        deleted_label = DeletedLabel(
+            label_id=label.id,
+            prediction_data=json.dumps(removed_predictions)
+        )
+        db.add(deleted_label)
+        db.commit()
         
         # Reassign sequential class_ids
         for idx, pred in enumerate(remaining_predictions, start=1):
@@ -493,6 +524,132 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
 
         # Regenerate annotated image if there are remaining predictions
         if prediction_data["predictions"]:
+            try:
+                image = cv2.imread(str(prediction.original_image))
+                if image is None:
+                    return JSONResponse(status_code=400, content={"error": "Failed to load image"})
+
+                labels = [item["class"] for item in prediction_data["predictions"]]
+                detections = sv.Detections.from_inference(prediction_data)
+                
+                label_annotator = sv.LabelAnnotator()
+                mask_annotator = sv.MaskAnnotator()
+                
+                annotated_image = mask_annotator.annotate(scene=image, detections=detections)
+                annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
+
+                # Save new annotated image
+                annotated_image_pil = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+                current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                random_number = random.randint(1000, 9999)
+                random_filename = f"{current_datetime}-{random_number}.jpeg"
+
+                output_dir = os.path.join("uploads", "analyzed")
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, random_filename)
+                
+                annotated_image_pil.save(output_path, optimize=True, quality=85)
+
+                # Update prediction with new image path
+                prediction.predicted_image = output_path
+                
+                # Update xray with new annotated image
+                xray = db.query(PatientXray).filter(PatientXray.prediction_id == prediction.id).first()
+                
+                if xray:
+                    xray.annotated_image = output_path
+
+                db.commit()
+
+            except Exception as e:
+                db.rollback()
+                return JSONResponse(status_code=500, content={"error": f"Error processing image: {str(e)}"})
+
+        new_annotated_image = f"{request.base_url}{prediction.predicted_image}" if prediction.predicted_image else None
+        
+        return JSONResponse(status_code=200, content={
+            "message": "Label marked as excluded successfully",
+            "annotated_image": new_annotated_image
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@prediction_router.get("/include-label/{label_id}",
+    status_code=200, 
+    summary="Include a label",
+    description="""
+    Include a previously excluded label by its ID
+    """,
+    responses={
+        200: {"description": "Label included successfully"},
+        404: {"description": "Label not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def include_label(request: Request, label_id: str, db: Session = Depends(get_db)):
+    try:
+        # Verify doctor authorization
+        decoded_token = verify_token(request)
+        if not decoded_token:
+            return JSONResponse(status_code=401, content={"error": "Invalid or missing token"})
+            
+        user = db.query(User).filter(
+            User.id == decoded_token.get("user_id"),
+            User.user_type == "doctor"
+        ).first()
+        
+        if not user:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized - must be a doctor"})
+
+        label = db.query(Label).filter(Label.id == label_id).first()
+        
+        if not label:
+            return JSONResponse(status_code=404, content={"error": "Label not found"})
+        
+        prediction = db.query(Prediction).filter(Prediction.id == label.prediction_id).first()
+        
+        if not prediction:
+            return JSONResponse(status_code=404, content={"error": "Prediction not found"})
+
+        # Delete old annotated image if it exists
+        if prediction.predicted_image and os.path.exists(prediction.predicted_image):
+            os.remove(prediction.predicted_image)
+
+        # Mark label as included
+        label.include = True
+        db.commit()
+
+        # Get deleted label data
+        deleted_label = db.query(DeletedLabel).filter(DeletedLabel.label_id == label_id).first()
+        
+        if not deleted_label:
+            return JSONResponse(status_code=404, content={"error": "Deleted label data not found"})
+
+        # Parse prediction JSON strings
+        try:
+            prediction_data = json.loads(prediction.prediction)
+            deleted_predictions = json.loads(deleted_label.prediction_data)
+        except json.JSONDecodeError:
+            return JSONResponse(status_code=500, content={"error": "Invalid prediction JSON format"})
+
+        # Combine current and deleted predictions
+        all_predictions = prediction_data["predictions"] + deleted_predictions
+
+        # Reassign sequential class_ids
+        for idx, pred in enumerate(all_predictions, start=1):
+            pred["class_id"] = idx
+            
+        prediction_data["predictions"] = all_predictions
+        prediction.prediction = json.dumps(prediction_data)
+
+        # Delete the deleted label record
+        db.delete(deleted_label)
+        db.commit()
+
+        # Regenerate annotated image
+        try:
             image = cv2.imread(str(prediction.original_image))
             if image is None:
                 return JSONResponse(status_code=400, content={"error": "Failed to load image"})
@@ -507,7 +664,7 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
             annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
             # Save new annotated image
-            annotated_image_pil = Image.fromarray(annotated_image)
+            annotated_image_pil = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
             current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
             random_number = random.randint(1000, 9999)
             random_filename = f"{current_datetime}-{random_number}.jpeg"
@@ -527,13 +684,21 @@ async def delete_label(request: Request, label_id: str, db: Session = Depends(ge
             if xray:
                 xray.annotated_image = output_path
 
-        db.commit()
+            db.commit()
+
+        except Exception as e:
+            db.rollback()
+            return JSONResponse(status_code=500, content={"error": f"Error processing image: {str(e)}"})
 
         new_annotated_image = f"{request.base_url}{prediction.predicted_image}" if prediction.predicted_image else None
+
+        print("new_annotated_image", new_annotated_image)
         
         return JSONResponse(status_code=200, content={
-            "message": "Label marked as excluded successfully",
+            "message": "Label marked as included successfully",
             "annotated_image": new_annotated_image
         })
+
     except Exception as e:
+        db.rollback()
         return JSONResponse(status_code=500, content={"error": str(e)})

@@ -500,7 +500,18 @@ async def upload_xray(
         # Create uploads directory if it doesn't exist
         os.makedirs("uploads/original", exist_ok=True)
             
-        file_path = f"uploads/original/{file.filename}"
+        # Extract original file extension
+        original_filename = file.filename
+        file_extension = os.path.splitext(original_filename)[1].lower()
+        
+        # If no extension found, default to .jpg
+        if not file_extension:
+            file_extension = '.jpg'
+            
+        # Generate UUID filename with extension
+        filename = f"{os.urandom(16).hex()}{file_extension}"
+        file_path = f"uploads/original/{filename}"
+        
         with open(file_path, "wb") as f:
             f.write(await file.read())
         

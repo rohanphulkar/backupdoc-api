@@ -283,32 +283,47 @@ async def subscribe(
         
         amount = plan_details["item"]["amount"]
 
+        normalized_amount = amount / 100
+
         if coupon:
-            if str(coupon.type) == "percentage":
-                discount_amount = int(amount * coupon.value / 100)
+            if str(coupon.type) == "CouponType.PERCENTAGE":
+                discount_amount = int(normalized_amount * coupon.value / 100)
             else:
                 discount_amount = int(coupon.value)
 
         else:
             discount_amount = 0
 
+        final_amount = int(normalized_amount - discount_amount)
+        
+        discounted_plan = db.query(Plan).filter(Plan.amount == final_amount).first()
+        if not discounted_plan:
+            rzp_plan = client.plan.create({
+                'period': 'monthly',
+                'interval': 1,
+                'item': {
+                    'name': f"{plan['name']} {discount_amount} plan",
+                    'amount': int(final_amount) * 100,
+                    'currency': 'INR',
+                    'description': f"Discounted plan for {plan['name']}",
+                },
+            })
+            discounted_plan = Plan(
+                rzp_plan_id=rzp_plan["id"],
+                amount=int(final_amount),
+                type=plan['name'],
+            )
+            db.add(discounted_plan)
+            db.commit()
+
         subscription_data = {
-            'plan_id': plan["plan_id"],
+            'plan_id': discounted_plan.rzp_plan_id,
             'customer_notify': 1,
             'quantity': 1 if payment.plan_type == "yearly" else 1,
             'total_count': 12 if payment.plan_type == "yearly" else 1,
             'start_at': int(time.time()) + 600,
             'notes': {'message': 'Subscription Payment'},
         }
-        
-        if discount_amount > 0:
-            subscription_data['addons'] = [{
-                # 'item': {
-                #     "name": f"Discount for {plan['name']}",
-                #     "amount": -round(discount_amount),
-                #     "currency": "INR",
-                # }
-            }]
 
         subscription = client.subscription.create(data=subscription_data)
 

@@ -16,9 +16,10 @@ class AdminAuth(AuthenticationBackend):
         email = form.get("username")
         password = form.get("password")
         
-        async with SessionLocal() as db:
+        db = SessionLocal()
+        try:
             query = select(User).filter(User.email == email)
-            result = await db.execute(query)
+            result = db.execute(query)
             user = result.scalar_one_or_none()
             
             if user and verify_password(str(password), str(user.password)):
@@ -26,6 +27,8 @@ class AdminAuth(AuthenticationBackend):
                     request.session.update({"token": user.email})
                     return True
             return False
+        finally:
+            db.close()
 
     async def logout(self, request: Request) -> bool:
         request.session.clear()
@@ -36,11 +39,14 @@ class AdminAuth(AuthenticationBackend):
         if not token:
             return False
             
-        async with SessionLocal() as db:
+        db = SessionLocal()
+        try:
             query = select(User).filter(User.email == token)
-            result = await db.execute(query)
+            result = db.execute(query)
             user = result.scalar_one_or_none()
             return user is not None and str(user.user_type) == "admin"
+        finally:
+            db.close()
 
 
 # add the views to admin
@@ -55,7 +61,3 @@ def create_admin(app):
     admin.add_view(SubscriptionAdmin)
     admin.add_view(ContactAdmin)
     return admin
-
-
-
-

@@ -28,6 +28,17 @@ class SubscriptionStatus(enum.Enum):
     PENDING = "pending"
 
 
+class Plan(Base):
+    __tablename__ = "plans"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, unique=True, default=generate_uuid, nullable=False)
+    rzp_plan_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    type: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
 class CouponUsers(Base):
     __tablename__ = "coupon_users"
     
