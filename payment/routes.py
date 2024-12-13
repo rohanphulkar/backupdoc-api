@@ -19,14 +19,34 @@ client = razorpay.Client(auth=(config("RAZORPAY_KEY_ID"), config("RAZORPAY_KEY_S
 
 payment_router = APIRouter()
 
+
 plans = [
     {
-        "name": "doctor",
-        "plan_id": config("DOCTOR_PLAN_ID"),
+        "name": "starter",
+        "prices":{
+            "monthly": 999,
+            "half_yearly": 5994,
+            "yearly": 11988,
+        },
+        "credits": 50,
     },
     {
-        "name": "premium", 
-        "plan_id": config("PREMIUM_PLAN_ID"),
+        "name": "pro",
+        "prices":{
+            "monthly": 3999,
+            "half_yearly": 3999 * 6,
+            "yearly": 3999 * 12,
+        },
+        "credits": 300,
+    },
+    {
+        "name": "max",
+        "prices":{
+            "monthly": 5999,
+            "half_yearly": 5999 * 6,
+            "yearly": 5999 * 12,
+        },
+        "credits": 600,
     }
 ]
 
@@ -212,11 +232,10 @@ async def delete_coupon(
         return JSONResponse(status_code=500, content={"error": str(e)})
     
 
-
 @payment_router.post("/payment/create",
-    summary="Create subscription payment", 
-    description="Initiates a new subscription payment or plan upgrade with optional coupon",
-    response_description="Returns payment/subscription ID for verification",
+    summary="Create one-time payment", 
+    description="Initiates a new one-time payment with optional coupon",
+    response_description="Returns payment order ID for verification",
     responses={
         200: {"description": "Payment initiated successfully"},
         401: {"description": "Unauthorized access"},
@@ -224,9 +243,9 @@ async def delete_coupon(
         500: {"description": "Server error while creating payment"}
     }
 )
-async def subscribe(
+async def create_payment(
     request: Request,
-    payment: PaymentCreateSchema = Body(..., description="Payment details including plan ID and optional coupon"),
+    payment: PaymentCreateSchema = Body(..., description="Payment details including plan and optional coupon"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -238,30 +257,28 @@ async def subscribe(
         user = db.query(User).filter(User.id == current_user).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        # Check if user has active subscription
-        active_subscription = db.query(Subscription).filter(
-            Subscription.user == str(user.id),
-            Subscription.status == SubscriptionStatus.ACTIVE
-        ).first()
 
-        plan = next((p for p in plans if p["name"].lower() == payment.plan.lower()), None)
-        if not plan:
-            return JSONResponse(status_code=404, content={"message": "Plan not found"})
+        # Find selected plan
+        selected_plan = None
+        for p in plans:
+            if p["name"] == payment.plan:
+                selected_plan = p
+                break
+                
+        if not selected_plan:
+            return JSONResponse(status_code=404, content={"error": "Invalid plan selected"})
 
-        # Validate plan upgrade
-        if active_subscription:
-            current_plan = user.account_type
-            requested_plan = payment.plan.lower()
-            
-            if str(current_plan) == "premium":
-                return JSONResponse(status_code=400, content={"error": "Already on highest plan"})
-            elif str(current_plan) == "doctor" and requested_plan != "premium":
-                return JSONResponse(status_code=400, content={"error": "Can only upgrade to premium plan"})
-        
+        # Get plan amount based on duration
+        if payment.plan_type == "monthly":
+            amount = selected_plan["prices"]["monthly"]
+        elif payment.plan_type == "half_yearly":
+            amount = selected_plan["prices"]["half_yearly"] 
+        else:
+            amount = selected_plan["prices"]["yearly"]
+
+        # Handle coupon if provided
         coupon = None
         if payment.coupon:
-            # Check if coupon exists and is valid
             coupon = db.query(Coupon).filter(
                 func.lower(Coupon.code) == payment.coupon.lower(),
                 Coupon.is_active == True,
@@ -271,7 +288,6 @@ async def subscribe(
             if not coupon:
                 return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
                 
-            # Check if user has already used this coupon
             coupon_usage = db.query(CouponUsers).filter(
                 CouponUsers.coupon_id == coupon.id,
                 CouponUsers.user_id == str(user.id)
@@ -280,68 +296,37 @@ async def subscribe(
             if coupon_usage:
                 return JSONResponse(status_code=400, content={"error": "Coupon already used"})
 
-        plan_details = client.plan.fetch(plan["plan_id"])
-        
-        amount = plan_details["item"]["amount"]
-
-        normalized_amount = amount / 100
-
-        if coupon:
             if str(coupon.type) == "CouponType.PERCENTAGE":
-                discount_amount = int(normalized_amount * coupon.value / 100)
+                discount_amount = int(amount * coupon.value / 100)
             else:
                 discount_amount = int(coupon.value)
-
         else:
             discount_amount = 0
 
-        final_amount = int(normalized_amount - discount_amount)
-        
-        discounted_plan = db.query(Plan).filter(Plan.amount == final_amount).first()
-        if not discounted_plan:
-            rzp_plan = client.plan.create({
-                'period': 'monthly',
-                'interval': 1,
-                'item': {
-                    'name': f"{plan['name']} {discount_amount} plan",
-                    'amount': int(final_amount) * 100,
-                    'currency': 'INR',
-                    'description': f"Discounted plan for {plan['name']}",
-                },
-            })
-            discounted_plan = Plan(
-                rzp_plan_id=rzp_plan["id"],
-                amount=int(final_amount),
-                type=plan['name'],
-            )
-            db.add(discounted_plan)
-            db.commit()
+        final_amount = amount - discount_amount
 
-        subscription_data = {
-            'plan_id': discounted_plan.rzp_plan_id,
-            'customer_notify': 1,
-            'quantity': 1 if payment.plan_type == "yearly" else 1,
-            'total_count': 12 if payment.plan_type == "yearly" else 1,
-            'start_at': int(time.time()) + 600,
-            'notes': {'message': 'Subscription Payment'},
+        # Create Razorpay order
+        order_data = {
+            'amount': final_amount * 100,  # Convert to paise
+            'currency': 'INR',
+            'notes': {
+                'plan_name': selected_plan['name'],
+                'plan_type': payment.plan_type
+            }
         }
 
-        subscription = client.subscription.create(data=subscription_data)
+        razorpay_order = client.order.create(data=order_data)
 
-        # Cancel existing subscription if upgrading
-        if active_subscription:
-            active_subscription.status = SubscriptionStatus.CANCELLED
-            db.add(active_subscription)
-            db.commit()
-
+        # Create order record
         order = Order(
             user=current_user,
-            plan=plan["name"],
+            plan=selected_plan["name"],
+            duration_months=12 if payment.plan_type == "yearly" else (6 if payment.plan_type == "half_yearly" else 1),
             coupon=coupon.id if coupon else None,
             amount=amount,
             discount_amount=discount_amount,
-            final_amount=amount - discount_amount,
-            payment_id=subscription["id"],
+            final_amount=final_amount,
+            payment_id=razorpay_order["id"],
             status=PaymentStatus.PENDING
         )
 
@@ -350,19 +335,20 @@ async def subscribe(
         
         return JSONResponse(status_code=200, content={
             "message": "Payment created successfully",
-            "subscription_id": subscription["id"],
-            "amount": amount - discount_amount
+            "order_id": razorpay_order["id"],
+            "amount": final_amount
         })
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
 @payment_router.post("/payment/verify",
-    summary="Verify subscription payment",
-    description="Verifies payment signature and activates subscription",
-    response_description="Returns confirmation of payment verification and subscription activation",
+    summary="Verify payment",
+    description="Verifies payment signature and activates plan", 
+    response_description="Returns confirmation of payment verification and plan activation",
     responses={
-        200: {"description": "Payment verified and subscription activated"},
-        400: {"description": "Invalid signature/Inactive subscription"},
+        200: {"description": "Payment verified and plan activated"},
+        400: {"description": "Invalid signature"},
         404: {"description": "Order/User/Plan not found"},
         500: {"description": "Server error while verifying payment"}
     }
@@ -372,11 +358,12 @@ async def verify_payment(
     db: Session = Depends(get_db)
 ):
     try:
-        order = db.query(Order).filter(Order.payment_id == payment.razorpay_subscription_id).first()
+        order = db.query(Order).filter(Order.payment_id == payment.razorpay_order_id).first()
         if not order:
             return JSONResponse(status_code=404, content={"error": "Order not found"})
         
-        msg = f"{payment.razorpay_payment_id}|{payment.razorpay_subscription_id}"
+        # Verify signature
+        msg = f"{payment.razorpay_order_id}|{payment.razorpay_payment_id}"
         secret_key = str(config("RAZORPAY_KEY_SECRET"))
         generated_signature = hmac.new(
             secret_key.encode('utf-8'),
@@ -389,36 +376,26 @@ async def verify_payment(
             db.commit()
             return JSONResponse(status_code=400, content={"error": "Invalid signature"})
         
-        subscription = client.subscription.fetch(payment.razorpay_subscription_id)
-        
         user = db.query(User).filter(User.id == order.user).first()
         if not user:
             return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        duration_days = 365 if subscription["quantity"] == 12 else 30
-        
-        # Cancel any existing active subscriptions
-        active_subscriptions = db.query(Subscription).filter(
-            Subscription.user == str(user.id),
-            Subscription.status == SubscriptionStatus.ACTIVE
-        ).all()
-        
-        for sub in active_subscriptions:
-            sub.status = SubscriptionStatus.CANCELLED
-            db.add(sub)
-        
-        user_subscription = Subscription(
-            user=str(user.id),
-            order=str(order.id),
-            subscription_id=subscription["id"],
-            start_date=datetime.now(),
-            end_date=datetime.now() + timedelta(days=duration_days),
-            status=SubscriptionStatus.ACTIVE
-        )
 
-        db.add(user_subscription)
-        db.commit()
+        # Find plan details
+        selected_plan = None
+        for p in plans:
+            if p["name"] == order.plan:
+                selected_plan = p
+                break
 
+        if not selected_plan:
+            return JSONResponse(status_code=404, content={"error": "Plan not found"})
+        
+        # Update user credits and expiry
+        user.account_type = selected_plan["name"]
+        user.credits = selected_plan["credits"]
+        user.last_credit_updated_at = datetime.now()
+        user.credit_expiry = datetime.now() + timedelta(days=order.duration_months * 30)
+        
         order.status = PaymentStatus.PAID
         db.add(order)
         
@@ -430,23 +407,11 @@ async def verify_payment(
             )
             db.add(coupon_user)
             
-            # Update coupon used count
             coupon = db.query(Coupon).filter(Coupon.id == order.coupon).first()
             if coupon:
                 coupon.used_count += 1
                 db.add(coupon)
         
-        db.commit()
-
-        if order.plan == "doctor":
-            user.account_type = "doctor"
-            user.credits = 150
-        elif order.plan == "premium":
-            user.account_type = "premium"
-            user.credits = 500
-        
-        user.last_credit_updated_at = datetime.now()
-        user.credit_expiry = user_subscription.end_date
         db.add(user)
         db.commit()
 
@@ -524,7 +489,7 @@ async def cancel_subscription(
     
 
 @payment_router.get("/fetch-plan-details",
-    summary="Fetch plan details",
+    summary="Fetch plan details", 
     description="Fetches the details of a plan",
     response_description="Returns the plan details",
     responses={
@@ -541,14 +506,12 @@ async def fetch_plan_details(
         plan = next((p for p in plans if p["name"].lower() == plan_name.lower()), None)
         if not plan:
             return JSONResponse(status_code=400, content={"error": f"Plan '{plan_name}' not found"})
-        
-        plan_details = client.plan.fetch(plan["plan_id"])
 
-        amount = plan_details["item"]["amount"]
-
-        print(plan_details)
-
-        return JSONResponse(status_code=200, content={"amount": amount })
+        return JSONResponse(status_code=200, content={
+            "name": plan["name"],
+            "prices": plan["prices"],
+            "credits": plan["credits"]
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 @payment_router.get("/apply-coupon",
@@ -564,6 +527,7 @@ async def fetch_plan_details(
 async def apply_coupon(
     plan_name: str = Query(..., description="Name of the plan to apply coupon to"),
     coupon_code: str = Query(..., description="Coupon code to apply"),
+    billing: str = Query(..., description="Billing type (monthly/half_yearly/yearly)"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -590,9 +554,15 @@ async def apply_coupon(
                 content={"error": f"Plan '{plan_name}' not found"}
             )
 
-        # Get plan details and calculate discount
-        plan_details = client.plan.fetch(plan["plan_id"])
-        amount = plan_details["item"]["amount"]
+        # Validate billing type
+        if billing not in plan["prices"]:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid billing type: {billing}"}
+            )
+
+        # Get plan amount based on billing type and calculate discount
+        amount = plan["prices"][billing]
         
         discount_amount = (
             int(amount * coupon.value / 100)
@@ -606,9 +576,9 @@ async def apply_coupon(
             status_code=200, 
             content={
                 "message": "Coupon applied successfully",
-                "original_amount": amount / 100,
-                "discount_amount": discount_amount / 100,
-                "final_amount": final_amount / 100,
+                "original_amount": amount,
+                "discount_amount": discount_amount,
+                "final_amount": final_amount,
                 "coupon": {
                     "code": coupon.code,
                     "type": coupon.type.value,
@@ -622,120 +592,3 @@ async def apply_coupon(
             status_code=500,
             content={"error": f"Failed to apply coupon: {str(e)}"}
         )
-    
-@payment_router.post("/upgrade-subscription",
-    summary="Upgrade subscription",
-    description="Upgrades a subscription to a higher plan",
-    response_description="Returns confirmation of subscription upgrade",
-    responses={
-        200: {"description": "Subscription upgraded successfully"},
-        400: {"description": "Invalid subscription/Plan not found"},
-        500: {"description": "Server error while upgrading subscription"}
-    }
-)
-async def upgrade_subscription(
-    request: Request,
-    payment: PaymentCreateSchema = Body(..., description="Payment details including optional coupon"),
-    db: Session = Depends(get_db)
-):
-    try:
-        current_user = get_current_user(request)
-        if not current_user:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-        
-        user = db.query(User).filter(User.id == current_user).first()
-        if not user:
-            return JSONResponse(status_code=404, content={"error": "User not found"})
-        
-        user_subscription = db.query(Subscription).filter(Subscription.user == current_user).first()
-        if not user_subscription:
-            return JSONResponse(status_code=404, content={"error": "Subscription not found"})
-        
-        if user_subscription.status != SubscriptionStatus.ACTIVE:
-            return JSONResponse(status_code=400, content={"error": "Subscription is not active"})
-        
-        if user_subscription.end_date < datetime.now():
-            return JSONResponse(status_code=400, content={"error": "Subscription has expired"})
-
-        # Determine upgrade plan based on current account type
-        upgrade_plan = None
-        if user.account_type == "free":
-            upgrade_plan = next((p for p in plans if p["name"].lower() == "doctor"), None)
-        elif user.account_type == "doctor":
-            upgrade_plan = next((p for p in plans if p["name"].lower() == "premium"), None)
-        else:
-            return JSONResponse(status_code=400, content={"error": "Already on highest plan"})
-
-        if not upgrade_plan:
-            return JSONResponse(status_code=404, content={"message": "Upgrade plan not found"})
-
-        # Handle coupon if provided
-        coupon = None
-        if payment.coupon:
-            coupon = db.query(Coupon).filter(
-                func.lower(Coupon.code) == payment.coupon.lower(),
-                Coupon.is_active == True,
-                Coupon.valid_until > datetime.now()
-            ).first()
-            if not coupon:
-                return JSONResponse(status_code=400, content={"error": "Invalid or expired coupon"})
-
-        # Get plan details and calculate amount
-        plan_details = client.plan.fetch(upgrade_plan["plan_id"])
-        amount = plan_details["item"]["amount"]
-
-        # Calculate discount if coupon exists
-        if coupon:
-            if coupon.type == "percentage":
-                discount_amount = int(amount * coupon.value / 100)
-            else:
-                discount_amount = int(coupon.value)
-                if discount_amount > amount:
-                    discount_amount = amount
-        else:
-            discount_amount = 0
-
-        # Prepare subscription data
-        subscription_data = {
-            'plan_id': upgrade_plan["plan_id"],
-            'customer_notify': 1,
-            'quantity': 12 if payment.plan_type == "yearly" else 1,
-            'total_count': 12 if payment.plan_type == "yearly" else 1,
-            'start_at': int(time.time()) + 600,
-            'notes': {'message': 'Subscription Upgrade Payment'},
-        }
-
-        if discount_amount > 0:
-            subscription_data['addons'] = [{
-                'item': {
-                    "name": f"Discount for {upgrade_plan['name']}",
-                    "amount": -int(discount_amount),
-                    "currency": "INR",
-                }
-            }]
-
-        # Create new subscription
-        subscription = client.subscription.create(data=subscription_data)
-
-        # Create order record
-        order = Order(
-            user=current_user,
-            plan=upgrade_plan["name"],
-            amount=amount,
-            discount_amount=discount_amount,
-            final_amount=amount - discount_amount,
-            payment_id=subscription["id"],
-            status=PaymentStatus.PENDING
-        )
-
-        db.add(order)
-        db.commit()
-
-        return JSONResponse(status_code=200, content={
-            "message": "Upgrade payment created successfully",
-            "subscription_id": subscription["id"],
-            "amount": amount - discount_amount
-        })
-
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})

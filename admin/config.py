@@ -61,10 +61,8 @@ def create_admin(app):
     admin.add_view(PredictionAdmin)
     
     # Payment and billing
-    admin.add_view(PlanAdmin)
     admin.add_view(CouponAdmin)
     admin.add_view(OrderAdmin)
-    admin.add_view(SubscriptionAdmin)
     
     # Support
     admin.add_view(ContactAdmin)

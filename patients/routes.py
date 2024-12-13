@@ -561,3 +561,63 @@ async def get_xray(request: Request, patient_id: str, db: Session = Depends(get_
         ]})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@patient_router.patch("/update-xray-image/{xray_id}",
+    response_model=dict,
+    status_code=200,
+    summary="Update patient X-ray image",
+    description="""
+    Update a specific patient X-ray image
+    """,
+    responses={
+        200: {"description": "X-ray image updated successfully"},
+        401: {"description": "Unauthorized - Invalid token"},
+        404: {"description": "X-ray image not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def update_xray_image(request: Request, xray_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        current_user = get_current_user(request)
+        if not current_user:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        
+        stmt = select(PatientXray).where(PatientXray.id == xray_id)
+        result = db.execute(stmt)
+        xray = result.scalar_one_or_none()
+        
+        if not xray:
+            return JSONResponse(status_code=404, content={"error": "X-ray image not found"})
+        
+        # delete existing original image
+        if xray.original_image and os.path.exists(xray.original_image):
+            os.remove(xray.original_image)
+        
+        # Get file extension, defaulting to .jpg if none or if filename is None
+        file_extension = '.jpg'
+        if file.filename:
+            _, ext = os.path.splitext(file.filename)
+            if ext:
+                file_extension = ext.lower()
+            
+        # Generate UUID filename with extension
+        filename = f"{os.urandom(16).hex()}{file_extension}"
+        
+        # Ensure uploads/original directory exists
+        os.makedirs("uploads/original", exist_ok=True)
+        
+        file_path = f"uploads/original/{filename}"
+        
+        # Read file content and write to new path
+        file_content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+
+        xray.original_image = file_path
+        db.commit()
+
+        return JSONResponse(status_code=200, content={"message": "X-ray image updated successfully"})
+    except SQLAlchemyError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})

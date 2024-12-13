@@ -2,7 +2,7 @@ from sqlalchemy import String, Integer, DateTime, Boolean
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 from db.db import Base
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 from typing import Optional
 
@@ -23,9 +23,9 @@ class User(Base):
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     user_type: Mapped[str] = mapped_column(String(255), nullable=False, default="doctor")
-    account_type: Mapped[str] = mapped_column(String(255), nullable=False, default="free")
+    account_type: Mapped[str] = mapped_column(String(255), nullable=False, default="free_trial")
     credits: Mapped[int] = mapped_column(Integer, default=3)
-    credit_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    credit_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now() + timedelta(days=7))
     is_annual: Mapped[int] = mapped_column(TINYINT(1), default=0)
     last_credit_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     otp: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

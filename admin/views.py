@@ -1,7 +1,7 @@
 from auth.model import User
 from patients.model import Patient, PatientXray
 from predict.model import Prediction, Label
-from payment.models import Plan, Coupon, Order, Subscription, CouponUsers
+from payment.models import Coupon, Order, CouponUsers, PaymentStatus, CouponType
 from contact.model import ContactUs
 from sqladmin import ModelView
 
@@ -46,34 +46,23 @@ class PredictionAdmin(ModelView, model=Prediction):
     name_plural = "Predictions"
     icon = "fa-solid fa-brain"
     chart_type = "bar"
-    chart_data = lambda self: {
-        "labels": ["Annotated", "Not Annotated"],
-        "datasets": [{
-            "data": [
-                self.session.query(Prediction).filter_by(is_annotated=True).count(),
-                self.session.query(Prediction).filter_by(is_annotated=False).count()
-            ]
-        }]
-    }
 
-
-class PlanAdmin(ModelView, model=Plan):
-    column_list = ["id", "rzp_plan_id", "amount", "type"]
-    column_sortable_list = ["created_at", "amount", "type"]
-    column_default_sort = ("created_at", True)
-    form_excluded_columns = ["id", "created_at", "updated_at"]
-    can_create = True
-    can_edit = True
-    can_delete = True
-    can_view_details = True
-    name_plural = "Plans"
-    icon = "fa-solid fa-credit-card"
+    def chart_data(self):
+        return {
+            "labels": ["Annotated", "Not Annotated"],
+            "datasets": [{
+                "data": [
+                    self.session.query(Prediction).filter_by(is_annotated=True).count(),
+                    self.session.query(Prediction).filter_by(is_annotated=False).count()
+                ]
+            }]
+        }
 
 
 class CouponAdmin(ModelView, model=Coupon):
-    column_list = ["id", "code", "type", "value", "used_count", "is_active"]
+    column_list = ["id", "code", "type", "value", "max_uses", "used_count", "valid_from", "valid_until", "is_active"]
     column_searchable_list = ["code"]
-    column_sortable_list = ["created_at", "used_count", "is_active"]
+    column_sortable_list = ["created_at", "used_count", "is_active", "valid_until"]
     column_default_sort = ("created_at", True)
     form_excluded_columns = ["id", "created_at", "updated_at", "used_count", "used_by_users"]
     can_create = True
@@ -85,11 +74,11 @@ class CouponAdmin(ModelView, model=Coupon):
 
 
 class OrderAdmin(ModelView, model=Order):
-    column_list = ["id", "user", "plan", "amount", "final_amount", "status"]
-    column_searchable_list = ["id", "payment_id"]
-    column_sortable_list = ["created_at", "status"]
+    column_list = ["id", "user", "plan", "duration_months", "amount", "discount_amount", "final_amount", "status", "payment_id"]
+    column_searchable_list = ["id", "payment_id", "user"]
+    column_sortable_list = ["created_at", "status", "amount", "final_amount"]
     column_default_sort = ("created_at", True)
-    form_excluded_columns = ["id", "created_at", "updated_at", "payment_id"]
+    form_excluded_columns = ["id", "created_at", "updated_at"]
     can_create = False
     can_edit = True
     can_delete = True
@@ -97,44 +86,20 @@ class OrderAdmin(ModelView, model=Order):
     name_plural = "Orders"
     icon = "fa-solid fa-shopping-cart"
     chart_type = "pie"
-    chart_data = lambda self: {
-        "labels": ["Pending", "Paid", "Failed", "Refunded", "Cancelled"],
-        "datasets": [{
-            "data": [
-                self.session.query(Order).filter_by(status="pending").count(),
-                self.session.query(Order).filter_by(status="paid").count(),
-                self.session.query(Order).filter_by(status="failed").count(),
-                self.session.query(Order).filter_by(status="refunded").count(),
-                self.session.query(Order).filter_by(status="cancelled").count()
-            ]
-        }]
-    }
 
-
-class SubscriptionAdmin(ModelView, model=Subscription):
-    column_list = ["id", "user", "start_date", "end_date", "status", "auto_renew"]
-    column_sortable_list = ["created_at", "start_date", "end_date", "status"]
-    column_default_sort = ("created_at", True)
-    form_excluded_columns = ["id", "created_at", "updated_at"]
-    can_create = False
-    can_edit = True
-    can_delete = True
-    can_view_details = True
-    name_plural = "Subscriptions"
-    icon = "fa-solid fa-repeat"
-    chart_type = "pie"
-    chart_data = lambda self: {
-        "labels": ["Active", "Inactive", "Expired", "Cancelled", "Pending"],
-        "datasets": [{
-            "data": [
-                self.session.query(Subscription).filter_by(status="active").count(),
-                self.session.query(Subscription).filter_by(status="inactive").count(),
-                self.session.query(Subscription).filter_by(status="expired").count(),
-                self.session.query(Subscription).filter_by(status="cancelled").count(),
-                self.session.query(Subscription).filter_by(status="pending").count()
-            ]
-        }]
-    }
+    def chart_data(self):
+        return {
+            "labels": ["Pending", "Paid", "Failed", "Refunded", "Cancelled"],
+            "datasets": [{
+                "data": [
+                    self.session.query(Order).filter_by(status=PaymentStatus.PENDING).count(),
+                    self.session.query(Order).filter_by(status=PaymentStatus.PAID).count(),
+                    self.session.query(Order).filter_by(status=PaymentStatus.FAILED).count(),
+                    self.session.query(Order).filter_by(status=PaymentStatus.REFUNDED).count(),
+                    self.session.query(Order).filter_by(status=PaymentStatus.CANCELLED).count()
+                ]
+            }]
+        }
 
 
 class ContactAdmin(ModelView, model=ContactUs):
